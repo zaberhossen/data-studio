@@ -1,0 +1,201 @@
+/**
+ * Server-side dashboard store (Postgres / Drizzle) — the DB backing behind
+ * `/api/dashboards`. Org-scoped like every tenant store: each method takes an
+ * `AuthContext` and ANDs `requireOrg(...)`, so a dashboard from another org can
+ * never be read, listed, saved, or deleted. Writes require an editor+ role.
+ *
+ * A `Dashboard` is DECOMPOSED into one `dashboards` row + N `widgets` child rows
+ * on save (in a transaction) and REASSEMBLED on read. Widget ids are the app's
+ * stable `w_…` strings (persisted filter targets reference them), so `save`
+ * replaces the widget set by id rather than minting new ones.
+ *
+ * SERVER-ONLY.
+ */
+
+import { and, asc, desc, eq } from "drizzle-orm";
+import { db } from "@/lib/db/client";
+import { dashboards, widgets } from "@/lib/db/schema";
+import { assertCanWrite, requireOrg, type AuthContext } from "@/lib/db/scope";
+import type { CanvasElement, Dashboard, ElementContent, Widget } from "@/lib/types/dashboard";
+import type { QueryDefinition } from "@/lib/types/query";
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+function isUuid(id: string): boolean {
+  return UUID_RE.test(id);
+}
+
+export type DashboardSummary = Pick<Dashboard, "id" | "name" | "updatedAt">;
+
+/** Split a widget into its persisted definition core (id/title/layout stripped). */
+function widgetDefinition(w: Widget): QueryDefinition {
+  return {
+    sourceId: w.sourceId,
+    queryKind: w.queryKind,
+    query: w.query,
+    ir: w.ir,
+    sql: w.sql,
+    execution: w.execution,
+    viz: w.viz,
+  };
+}
+
+function rowToWidget(r: typeof widgets.$inferSelect): Widget {
+  const def = (r.definition ?? {}) as QueryDefinition;
+  return {
+    ...def,
+    id: r.id,
+    title: r.title,
+    kind: "query",
+    layout: r.gridLayout ?? { x: 0, y: 0, w: 4, h: 4 },
+    canvasLayout: r.canvasLayout ?? undefined,
+  };
+}
+
+/** A non-query row (kind text/image/shape/line) → a `CanvasElement`. */
+function rowToElement(r: typeof widgets.$inferSelect): CanvasElement {
+  return {
+    id: r.id,
+    kind: (r.kind === "query" ? "text" : r.kind) as CanvasElement["kind"],
+    canvasLayout: r.canvasLayout ?? { x: 0, y: 0, w: 240, h: 64 },
+    content: (r.content ?? { kind: "text", text: "" }) as ElementContent,
+  };
+}
+
+export class DbDashboardStore {
+  async list(ctx: AuthContext): Promise<DashboardSummary[]> {
+    const rows = await db()
+      .select({ id: dashboards.id, name: dashboards.name, updatedAt: dashboards.updatedAt })
+      .from(dashboards)
+      .where(requireOrg(dashboards.orgId, ctx))
+      .orderBy(desc(dashboards.updatedAt));
+    return rows.map((r) => ({ id: r.id, name: r.name, updatedAt: r.updatedAt.getTime() }));
+  }
+
+  async get(ctx: AuthContext, id: string): Promise<Dashboard | null> {
+    if (!isUuid(id)) return null;
+    const [head] = await db()
+      .select()
+      .from(dashboards)
+      .where(and(requireOrg(dashboards.orgId, ctx), eq(dashboards.id, id)))
+      .limit(1);
+    if (!head) return null;
+
+    const widgetRows = await db()
+      .select()
+      .from(widgets)
+      .where(and(requireOrg(widgets.orgId, ctx), eq(widgets.dashboardId, id)))
+      .orderBy(asc(widgets.sort));
+
+    return {
+      id: head.id,
+      name: head.name,
+      layoutMode: head.layoutMode ?? "grid",
+      canvas: head.canvas ?? undefined,
+      filters: head.filters ?? [],
+      updatedAt: head.updatedAt.getTime(),
+      widgets: widgetRows.filter((r) => (r.kind ?? "query") === "query").map(rowToWidget),
+      elements: widgetRows.filter((r) => r.kind && r.kind !== "query").map(rowToElement),
+    };
+  }
+
+  async create(ctx: AuthContext, name = "Untitled dashboard"): Promise<Dashboard> {
+    assertCanWrite(ctx);
+    const [row] = await db()
+      .insert(dashboards)
+      .values({ orgId: ctx.orgId, name, filters: [], createdBy: ctx.userId })
+      .returning();
+    return {
+      id: row.id,
+      name: row.name,
+      layoutMode: "grid",
+      filters: [],
+      widgets: [],
+      elements: [],
+      updatedAt: row.updatedAt.getTime(),
+    };
+  }
+
+  /** Overwrite an existing dashboard (head + full widget set) in one transaction. */
+  async save(ctx: AuthContext, dashboard: Dashboard): Promise<Dashboard | null> {
+    assertCanWrite(ctx);
+    if (!isUuid(dashboard.id)) return null;
+
+    const now = new Date();
+    return db().transaction(async (tx) => {
+      const updated = await tx
+        .update(dashboards)
+        .set({
+          name: dashboard.name,
+          layoutMode: dashboard.layoutMode ?? "grid",
+          canvas: dashboard.canvas ?? null,
+          filters: dashboard.filters ?? [],
+          updatedAt: now,
+        })
+        .where(and(requireOrg(dashboards.orgId, ctx), eq(dashboards.id, dashboard.id)))
+        .returning();
+      if (updated.length === 0) return null; // not found / not this org
+
+      // Replace the whole item set (query widgets + decoration elements) by id:
+      // delete all rows, then re-insert in order.
+      await tx
+        .delete(widgets)
+        .where(and(requireOrg(widgets.orgId, ctx), eq(widgets.dashboardId, dashboard.id)));
+
+      const rows = [
+        ...dashboard.widgets.map((w, i) => ({
+          id: w.id,
+          dashboardId: dashboard.id,
+          orgId: ctx.orgId,
+          title: w.title,
+          kind: "query" as const,
+          definition: widgetDefinition(w),
+          content: null,
+          gridLayout: w.layout,
+          canvasLayout: w.canvasLayout ?? null,
+          sort: i,
+          updatedAt: now,
+        })),
+        ...(dashboard.elements ?? []).map((e, j) => ({
+          id: e.id,
+          dashboardId: dashboard.id,
+          orgId: ctx.orgId,
+          title: "",
+          kind: e.kind,
+          definition: null,
+          content: e.content,
+          gridLayout: null,
+          canvasLayout: e.canvasLayout,
+          sort: dashboard.widgets.length + j,
+          updatedAt: now,
+        })),
+      ];
+      if (rows.length > 0) await tx.insert(widgets).values(rows);
+
+      return {
+        id: dashboard.id,
+        name: dashboard.name,
+        layoutMode: dashboard.layoutMode ?? "grid",
+        canvas: dashboard.canvas,
+        filters: dashboard.filters ?? [],
+        widgets: dashboard.widgets,
+        elements: dashboard.elements ?? [],
+        updatedAt: now.getTime(),
+      };
+    });
+  }
+
+  async remove(ctx: AuthContext, id: string): Promise<void> {
+    assertCanWrite(ctx);
+    if (!isUuid(id)) return;
+    // Widgets cascade via the dashboard FK (onDelete: cascade).
+    await db()
+      .delete(dashboards)
+      .where(and(requireOrg(dashboards.orgId, ctx), eq(dashboards.id, id)));
+  }
+}
+
+let store: DbDashboardStore | null = null;
+export function getDashboardDbStore(): DbDashboardStore {
+  if (!store) store = new DbDashboardStore();
+  return store;
+}

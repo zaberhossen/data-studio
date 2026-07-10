@@ -1,0 +1,35 @@
+[package]
+name = "analytics-engine"
+version = "0.1.0"
+edition = "2021"
+authors = ["Data Studio"]
+description = "High-performance analytics engine (filter / aggregate / pivot) compiled to WebAssembly."
+
+[lib]
+# `cdylib` is required so wasm-pack can produce a loadable WASM module.
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# Bridge between Rust and JS. `serde-serialize` lets us hand JsValue <-> serde structs.
+wasm-bindgen = { version = "0.2", features = ["serde-serialize"] }
+# (De)serialization of the dataset + query payloads.
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+# Zero-copy-ish bridging of arbitrary JS values into serde-deserializable Rust types.
+serde-wasm-bindgen = "0.6"
+# SQL parser (datafusion's sqlparser-rs) — powers the Builder↔SQL bridge.
+sqlparser = "0.52"
+
+# Surface Rust panics as readable console errors during development.
+console_error_panic_hook = { version = "0.1", optional = true }
+
+[features]
+default = ["console_error_panic_hook"]
+
+# Aggressive size + speed optimization for the shipped .wasm binary.
+[profile.release]
+opt-level = "z"   # optimize for binary size (use "3" if you favor raw speed over size)
+lto = true        # link-time optimization
+codegen-units = 1 # better optimization at the cost of compile time
+panic = "abort"   # smaller binary; no unwinding tables
+strip = true      # strip symbols from the final binary

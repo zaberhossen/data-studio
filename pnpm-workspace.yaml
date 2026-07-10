@@ -1,0 +1,18 @@
+allowBuilds:
+  esbuild: true
+  sharp: true
+  unrs-resolver: false
+
+# drizzle-kit (migrations/studio) bundles via esbuild, whose postinstall links
+# its platform binary. Next 16 bundles sharp for image optimization and needs
+# its native binary built. Allow those two; keep everything else unbuilt.
+onlyBuiltDependencies:
+  - esbuild
+  - sharp
+
+# react-simple-maps@3 caps its React peer at 18, but runs fine on React 19
+# (it's a thin wrapper over d3-geo). Allow it against our React 19 install.
+peerDependencyRules:
+  allowedVersions:
+    "react-simple-maps>react": "19"
+    "react-simple-maps>react-dom": "19"

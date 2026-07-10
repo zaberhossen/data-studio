@@ -1,0 +1,137 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/*
+ * Supabase-style design tokens.
+ * Neutral gray scale + signature green accent (#3ecf8e ≈ hsl(153 60% 53%)).
+ * All component color derives from these variables, so the whole look is
+ * driven from here — no per-component color edits needed.
+ */
+@layer base {
+  :root {
+    --background: 0 0% 100%;
+    --foreground: 0 0% 9%;
+    --card: 0 0% 100%;
+    --card-foreground: 0 0% 9%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 0 0% 9%;
+    /* Supabase green */
+    --primary: 153 60% 42%;
+    --primary-foreground: 0 0% 100%;
+    --brand: 153 60% 42%;
+    --brand-foreground: 0 0% 100%;
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 98%;
+    --secondary: 0 0% 96%;
+    --secondary-foreground: 0 0% 12%;
+    --muted: 0 0% 96%;
+    --muted-foreground: 0 0% 40%;
+    --accent: 0 0% 94.5%;
+    --accent-foreground: 0 0% 12%;
+    --border: 0 0% 90%;
+    --input: 0 0% 89%;
+    --ring: 153 60% 42%;
+    --radius: 0.375rem;
+    /* Code syntax accents (SQL editor) */
+    --code-string: 142 71% 35%;
+    --code-number: 32 90% 42%;
+
+    /* ── Data-viz palette (validated; see src/lib/viz/palette.ts) ──────────
+       Full-color values (not HSL triplets) — reference as `var(--viz-1)`.
+       Categorical slots are a FIXED order; never cycled. Light mode. */
+    --viz-1: #2a78d6;
+    --viz-2: #1baf7a;
+    --viz-3: #eda100;
+    --viz-4: #008300;
+    --viz-5: #4a3aa7;
+    --viz-6: #e34948;
+    --viz-7: #e87ba4;
+    --viz-8: #eb6834;
+    /* Sequential (blue, near-zero → max) for heat/choropleth. */
+    --viz-seq-0: #cde2fb;
+    --viz-seq-1: #86b6ef;
+    --viz-seq-2: #3987e5;
+    --viz-seq-3: #256abf;
+    --viz-seq-4: #104281;
+    /* Status (fixed — never themed, never a series color). */
+    --viz-good: #0ca30c;
+    --viz-warning: #fab219;
+    --viz-serious: #ec835a;
+    --viz-critical: #d03b3b;
+    /* Chart chrome. */
+    --viz-grid: #e1e0d9;
+    --viz-axis: #c3c2b7;
+  }
+
+  /* Dark theme — Supabase Studio's default look. Applied via `.dark` on <html>. */
+  .dark {
+    --background: 0 0% 7%;
+    --foreground: 0 0% 95%;
+    --card: 0 0% 9.5%;
+    --card-foreground: 0 0% 95%;
+    --popover: 0 0% 9.5%;
+    --popover-foreground: 0 0% 95%;
+    /* Brighter green so it pops on dark surfaces */
+    --primary: 153 60% 53%;
+    --primary-foreground: 152 40% 8%;
+    --brand: 153 60% 53%;
+    --brand-foreground: 152 40% 8%;
+    --destructive: 0 62% 45%;
+    --destructive-foreground: 0 0% 98%;
+    --secondary: 0 0% 15%;
+    --secondary-foreground: 0 0% 95%;
+    --muted: 0 0% 15%;
+    --muted-foreground: 0 0% 60%;
+    --accent: 0 0% 17%;
+    --accent-foreground: 0 0% 95%;
+    --border: 0 0% 18%;
+    --input: 0 0% 20%;
+    --ring: 153 60% 53%;
+    --code-string: 142 60% 55%;
+    --code-number: 35 90% 62%;
+
+    /* Data-viz palette — dark steps (same hues stepped for the dark surface,
+       validated as a set against #1a1a19). */
+    --viz-1: #3987e5;
+    --viz-2: #199e70;
+    --viz-3: #c98500;
+    --viz-4: #008300;
+    --viz-5: #9085e9;
+    --viz-6: #e66767;
+    --viz-7: #d55181;
+    --viz-8: #d95926;
+    --viz-seq-0: #104281;
+    --viz-seq-1: #256abf;
+    --viz-seq-2: #3987e5;
+    --viz-seq-3: #86b6ef;
+    --viz-seq-4: #cde2fb;
+    --viz-good: #0ca30c;
+    --viz-warning: #fab219;
+    --viz-serious: #ec835a;
+    --viz-critical: #d03b3b;
+    --viz-grid: #2c2c2a;
+    --viz-axis: #383835;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground;
+    font-family: var(--font-sans), ui-sans-serif, system-ui, -apple-system,
+      "Segoe UI", Roboto, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+  code,
+  pre,
+  kbd,
+  samp,
+  .font-mono {
+    font-family: var(--font-mono), ui-monospace, SFMono-Regular, Menlo, Monaco,
+      Consolas, monospace;
+  }
+}

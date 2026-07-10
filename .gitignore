@@ -1,0 +1,19 @@
+# dependencies
+/node_modules
+
+# next.js
+/.next/
+/out/
+next-env.d.ts
+
+# rust / wasm build artifacts
+/wasm/target
+/src/wasm/pkg
+
+# misc
+.DS_Store
+*.log
+.env*.local
+
+# server-side data-source store (contains credentials — never commit)
+/.data
