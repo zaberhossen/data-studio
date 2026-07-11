@@ -13,6 +13,10 @@ const badgeVariants = cva(
         outline: "text-foreground",
         muted:
           "border-transparent bg-muted text-muted-foreground",
+        // Supabase-style plan/env pills.
+        plan: "border-border bg-transparent px-1.5 py-0 text-[10px] uppercase tracking-wide text-muted-foreground",
+        warning:
+          "border-amber-500/40 bg-amber-500/10 px-1.5 py-0 text-[10px] uppercase tracking-wide text-amber-600 dark:text-amber-400",
       },
     },
     defaultVariants: { variant: "default" },

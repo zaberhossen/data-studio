@@ -11,19 +11,21 @@
  */
 
 import * as React from "react";
+import { useRouter } from "next/navigation";
 import {
   Command as CommandIcon,
   Database,
   FilePlus2,
-  History,
+  Home,
   LayoutDashboard,
-  ListFilter,
   Moon,
   Save,
+  ScrollText,
+  Table2,
   Terminal,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import type { PanelKey } from "@/components/layout/IconRail";
+import { useWorkspace } from "@/app/(app)/WorkspaceProvider";
 
 interface CommandItem {
   id: string;
@@ -36,8 +38,6 @@ interface CommandItem {
 interface CommandMenuProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  onNavigate: (key: PanelKey) => void;
-  onNewQuery: () => void;
 }
 
 function toggleTheme() {
@@ -49,12 +49,9 @@ function toggleTheme() {
   }
 }
 
-export function CommandMenu({
-  open,
-  onOpenChange,
-  onNavigate,
-  onNewQuery,
-}: CommandMenuProps) {
+export function CommandMenu({ open, onOpenChange }: CommandMenuProps) {
+  const router = useRouter();
+  const { newQuery } = useWorkspace();
   const [query, setQuery] = React.useState("");
   const [activeIndex, setActiveIndex] = React.useState(0);
   const inputRef = React.useRef<HTMLInputElement>(null);
@@ -84,8 +81,8 @@ export function CommandMenu({
   }, [open]);
 
   const items = React.useMemo<CommandItem[]>(() => {
-    const nav = (key: PanelKey) => () => {
-      onNavigate(key);
+    const nav = (href: string) => () => {
+      router.push(href);
       onOpenChange(false);
     };
     return [
@@ -95,16 +92,18 @@ export function CommandMenu({
         hint: "Action",
         icon: FilePlus2,
         run: () => {
-          onNewQuery();
+          newQuery();
+          router.push("/sql");
           onOpenChange(false);
         },
       },
-      { id: "go-query", label: "Go to SQL Editor", hint: "Navigate", icon: Terminal, run: nav("query") },
-      { id: "go-sources", label: "Go to Data sources", hint: "Navigate", icon: Database, run: nav("sources") },
-      { id: "go-fields", label: "Go to Fields", hint: "Navigate", icon: ListFilter, run: nav("fields") },
-      { id: "go-saved", label: "Go to Saved queries", hint: "Navigate", icon: Save, run: nav("saved") },
-      { id: "go-history", label: "Go to History", hint: "Navigate", icon: History, run: nav("results") },
-      { id: "go-dashboards", label: "Go to Dashboards", hint: "Navigate", icon: LayoutDashboard, run: nav("dashboards") },
+      { id: "go-home", label: "Go to Home", hint: "Navigate", icon: Home, run: nav("/") },
+      { id: "go-editor", label: "Go to Table Editor", hint: "Navigate", icon: Table2, run: nav("/editor") },
+      { id: "go-sql", label: "Go to SQL Editor", hint: "Navigate", icon: Terminal, run: nav("/sql") },
+      { id: "go-sources", label: "Go to Data sources", hint: "Navigate", icon: Database, run: nav("/sources") },
+      { id: "go-saved", label: "Go to Saved queries", hint: "Navigate", icon: Save, run: nav("/saved") },
+      { id: "go-logs", label: "Go to Logs", hint: "Navigate", icon: ScrollText, run: nav("/logs") },
+      { id: "go-dashboards", label: "Go to Dashboards", hint: "Navigate", icon: LayoutDashboard, run: nav("/dashboards") },
       {
         id: "toggle-theme",
         label: "Toggle theme",
@@ -116,7 +115,7 @@ export function CommandMenu({
         },
       },
     ];
-  }, [onNavigate, onNewQuery, onOpenChange]);
+  }, [router, newQuery, onOpenChange]);
 
   const filtered = React.useMemo(() => {
     const q = query.trim().toLowerCase();

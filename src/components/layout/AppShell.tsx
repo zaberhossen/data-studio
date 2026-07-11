@@ -1,57 +1,31 @@
 "use client";
 
 /**
- * AppShell — the workspace frame: a fixed-height viewport split into an always-
- * visible IconRail (primary nav) and a right column of Topbar + scrollable main
- * canvas. The shell owns the active section; per-section chrome (contextual
- * sidebars, splits) is composed by the page inside `children`.
+ * AppShell — the persistent workspace frame, mounted once in the (app) layout so
+ * it survives route navigation: a fixed-height viewport split into the always-
+ * visible IconRail (primary nav) and a right column of AppHeader + the routed
+ * page. Only the page area scrolls; each routed page manages its own internal
+ * scroll/split so the rail and header stay pinned.
  *
- * Layout: `h-screen` flex row → IconRail (fixed) + flex column (Topbar + main).
- * Only the main canvas scrolls, so the rail and header stay pinned.
- *
- * shadcn primitives: composes IconRail/Topbar (Button, Badge, ThemeToggle).
+ * Owns the ⌘K command-menu open state (the menu is global chrome).
  */
 
 import * as React from "react";
-import { IconRail, type PanelKey } from "./IconRail";
-import { Topbar, type EngineStatus } from "./Topbar";
+import { IconRail } from "./IconRail";
+import { AppHeader } from "./AppHeader";
+import { CommandMenu } from "@/components/CommandMenu";
 
-interface AppShellProps {
-  active: PanelKey;
-  onSelect: (key: PanelKey) => void;
-  title: string;
-  subtitle?: string;
-  engineStatus?: EngineStatus;
-  /** Panel-specific header actions (e.g. a Run button). */
-  actions?: React.ReactNode;
-  /** Opens the ⌘K command menu. */
-  onOpenCommand?: () => void;
-  children: React.ReactNode;
-}
+export function AppShell({ children }: { children: React.ReactNode }) {
+  const [commandOpen, setCommandOpen] = React.useState(false);
 
-export function AppShell({
-  active,
-  onSelect,
-  title,
-  subtitle,
-  engineStatus,
-  actions,
-  onOpenCommand,
-  children,
-}: AppShellProps) {
   return (
     <div className="flex h-screen overflow-hidden bg-background text-foreground">
-      <IconRail active={active} onSelect={onSelect} />
+      <IconRail />
       <div className="flex min-w-0 flex-1 flex-col">
-        <Topbar
-          title={title}
-          subtitle={subtitle}
-          engineStatus={engineStatus}
-          actions={actions}
-          onOpenCommand={onOpenCommand}
-        />
-        <main className="min-h-0 min-w-0 flex-1 overflow-auto">{children}</main>
+        <AppHeader onOpenCommand={() => setCommandOpen(true)} />
+        <main className="min-h-0 min-w-0 flex-1 overflow-hidden">{children}</main>
       </div>
+      <CommandMenu open={commandOpen} onOpenChange={setCommandOpen} />
     </div>
   );
 }
