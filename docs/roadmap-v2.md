@@ -411,8 +411,20 @@ re-query; one dataset crossing into the worker.
       limiter — a shared store for a global quota stays out of scope.)*
 - [ ] `share_links.permission = "edit"` is dead schema — implement or drop.
 - [ ] Dashboard filter SQL merge → bound params (see M13-C).
-- [ ] CSP headers; dependency audit in CI; `DATA_STUDIO_ENC_KEY` rotation
+- [~] CSP headers; dependency audit in CI; `DATA_STUDIO_ENC_KEY` rotation
       runbook.
+      ✅ **CSP + security headers** (`next.config.mjs`): baseline hardening
+      (`X-Content-Type-Options`, `Referrer-Policy`, HSTS, `Permissions-Policy`,
+      `X-DNS-Prefetch-Control`) enforced on every route; the existing
+      `frame-ancestors` clickjacking rule kept in its own enforcing header
+      (embed `*` / everything else `'none'`). A full content policy
+      (`default-src 'self'`; `script-src` with `'wasm-unsafe-eval'`+`blob:` for
+      the WASM/DuckDB workers; `connect-src https: wss:` for client-side
+      connectors; `img-src data: blob: https:`; `worker-src blob:`) ships as
+      **`Content-Security-Policy-Report-Only` by default** — enforcement is
+      opt-in via `CSP_ENFORCE=1` after a browser pass confirms no false
+      positives (documented in `docs/security.md`). *(Dependency audit in CI +
+      enc-key rotation runbook still open.)*
 
 ### Testing & CI
 - [ ] CI pipeline: lint → typecheck → vitest → `pnpm exec next build` (without
@@ -437,7 +449,16 @@ re-query; one dataset crossing into the worker.
       *(Empty states + skeletons already exist in results/widgets; a broader
       skeleton/empty-state sweep across remaining surfaces still open.)*
 - [ ] User invitations + role management UI (AuthContext roles exist).
-- [ ] Audit log viewer for admins.
+- [x] Audit log viewer for admins. Read-only viewer over the existing
+      fire-and-forget audit log (share create/revoke/view + any future action).
+      `canAdmin`/`assertCanAdmin` (owner+admin) gate in `db/scope.ts`; client-safe
+      `AuditLogRecord`/`AuditLogPage` + a pure `parseAuditListParams` (unit-tested)
+      in `lib/types/audit.ts`; `listAudit` (org-scoped, keyset-paginated on the
+      bigserial `id`, actor left-joined from `users`) + `listAuditActions` in
+      `server/audit.ts`; `GET /api/audit-log` (page + `?actions=1` filter chips,
+      403 for non-admins); `AuditLogView` + `/audit` route (LogsView-style dense
+      rows, action-filter rail, "Load more"); admin-gated nav entry in `IconRail`
+      + `CommandMenu`.
 - [ ] Onboarding checklist (connect source → first query → first dashboard →
       first share).
 
