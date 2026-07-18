@@ -475,8 +475,15 @@ re-query; one dataset crossing into the worker.
       403 for non-admins); `AuditLogView` + `/audit` route (LogsView-style dense
       rows, action-filter rail, "Load more"); admin-gated nav entry in `IconRail`
       + `CommandMenu`.
-- [ ] Onboarding checklist (connect source → first query → first dashboard →
-      first share).
+- [x] Onboarding checklist (connect source → first query → first dashboard →
+      first share). Dismissible "Getting started" card on `HomeView`. Step
+      completion is a monotonic latch (`lib/onboarding.ts`, unit-tested): live
+      signals — client sources (`!builtin`) + run history, plus durable server
+      facts from `GET /api/onboarding` (org-scoped `LIMIT 1` existence probes for
+      saved-query / query-widget / share-link) — are OR-merged onto the state
+      persisted in localStorage (keyed per org), so completed steps stay checked
+      across reloads and deletes. Each incomplete step routes to its surface;
+      progress bar + per-org dismiss.
 
 ---
 

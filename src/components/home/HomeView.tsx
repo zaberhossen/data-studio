@@ -31,6 +31,7 @@ import type { DataSourceKind } from "@/lib/types/datasource";
 import { useSources, useEngineStatus } from "@/app/(app)/WorkspaceProvider";
 import type { SourceView } from "@/hooks/useDataSources";
 import { AddSourceDialog } from "@/components/sources/AddSourceDialog";
+import { OnboardingChecklist } from "@/components/home/OnboardingChecklist";
 
 const KIND_ICON: Record<DataSourceKind, React.ComponentType<{ className?: string }>> = {
   file: FileSpreadsheet,
@@ -62,6 +63,8 @@ export function HomeView() {
       <div className="mx-auto max-w-6xl px-8 py-8">
         <h1 className="text-2xl font-semibold tracking-tight">{orgName}</h1>
         <p className="mt-1 text-sm text-muted-foreground">Project overview</p>
+
+        <OnboardingChecklist />
 
         {/* Status overview */}
         <div className="mt-6 grid grid-cols-2 gap-3 sm:grid-cols-4">
