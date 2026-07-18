@@ -406,6 +406,7 @@ function QueryPreview({ id }: { id: string }) {
 
   React.useEffect(() => {
     let alive = true;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- re-enter loading state when `id` changes before the async fetch settles
     setLoading(true);
     void getSavedQueryStore()
       .get(id)
@@ -428,7 +429,7 @@ function QueryPreview({ id }: { id: string }) {
     );
   }
   if (!record) {
-    return <p className="text-sm text-muted-foreground">Couldn't load this query.</p>;
+    return <p className="text-sm text-muted-foreground">Couldn&apos;t load this query.</p>;
   }
 
   const snippet =

@@ -29,6 +29,7 @@ import type {
   FilterKind,
   FilterOperator,
   FilterTarget,
+  FilterValue,
   Widget,
 } from "@/lib/types/dashboard";
 
@@ -65,21 +66,17 @@ export function FilterEditor({
   };
 
   const handleSubmit = (draft: FilterDraft) => {
-    if (editing) {
-      onUpdate(editing.id, {
-        label: draft.label,
-        kind: draft.kind,
-        targets: draft.targets,
-        op: draft.op || undefined,
-      });
-    } else {
-      onAdd({
-        label: draft.label,
-        kind: draft.kind,
-        targets: draft.targets,
-        op: draft.op || undefined,
-      });
-    }
+    const payload: Omit<DashboardFilter, "id"> = {
+      label: draft.label,
+      kind: draft.kind,
+      targets: draft.targets,
+      op: draft.op || undefined,
+      default: draft.default,
+      required: draft.required || undefined,
+      locked: draft.locked || undefined,
+    };
+    if (editing) onUpdate(editing.id, payload);
+    else onAdd(payload);
     setDialogOpen(false);
   };
 
@@ -134,6 +131,8 @@ function FilterPill({
     <span className="flex items-center gap-1 rounded border border-border bg-background px-2 py-0.5 text-xs">
       <span className="font-medium">{filter.label}</span>
       <span className="text-muted-foreground">({filter.kind})</span>
+      {filter.required && <span className="text-destructive" title="Required">*</span>}
+      {filter.locked && <span className="text-muted-foreground" title="Locked (author-pinned)">🔒</span>}
       <span className="text-muted-foreground">
         → {filter.targets.length} widget{filter.targets.length !== 1 ? "s" : ""}
       </span>
@@ -164,6 +163,9 @@ interface FilterDraft {
   kind: FilterKind;
   targets: FilterTarget[];
   op: FilterOperator | "";
+  default?: FilterValue;
+  required: boolean;
+  locked: boolean;
 }
 
 const KINDS: FilterKind[] = [
@@ -205,14 +207,23 @@ function FilterDefinitionDialog({
   const [kind, setKind] = React.useState<FilterKind>("select");
   const [targets, setTargets] = React.useState<FilterTarget[]>([]);
   const [op, setOp] = React.useState<FilterOperator | "">("");
+  const [defaultValue, setDefaultValue] = React.useState<FilterValue | undefined>(undefined);
+  const [required, setRequired] = React.useState(false);
+  const [locked, setLocked] = React.useState(false);
+  const [mapColumn, setMapColumn] = React.useState("");
 
   React.useEffect(() => {
     if (open) {
-      // eslint-disable-next-line react-hooks/set-state-in-effect -- seeds editable form fields from props when the dialog opens
+      /* eslint-disable react-hooks/set-state-in-effect -- seeds editable form fields from props when the dialog opens */
       setLabel(initial?.label ?? "");
       setKind(initial?.kind ?? "select");
       setTargets(initial?.targets ?? []);
       setOp(initial?.op ?? "");
+      setDefaultValue(initial?.default);
+      setRequired(initial?.required ?? false);
+      setLocked(initial?.locked ?? false);
+      setMapColumn("");
+      /* eslint-enable react-hooks/set-state-in-effect */
     }
   }, [open, initial]);
 
@@ -225,6 +236,13 @@ function FilterDefinitionDialog({
     setTargets((prev) => [...prev, { widgetId, column: "" }]);
   };
 
+  /** Auto-wire: map EVERY widget to the same column name (field-name match). */
+  const mapAllWidgets = () => {
+    const column = mapColumn.trim();
+    if (!column || widgets.length === 0) return;
+    setTargets(widgets.map((w) => ({ widgetId: w.id, column })));
+  };
+
   const updateTarget = (idx: number, patch: Partial<FilterTarget>) => {
     setTargets((prev) =>
       prev.map((t, i) => (i === idx ? { ...t, ...patch } : t)),
@@ -235,8 +253,12 @@ function FilterDefinitionDialog({
     setTargets((prev) => prev.filter((_, i) => i !== idx));
   };
 
-  const canSubmit = label.trim().length > 0 && targets.length > 0 &&
-    targets.every((t) => t.widgetId && t.column.trim());
+  const canSubmit =
+    label.trim().length > 0 &&
+    targets.length > 0 &&
+    targets.every((t) => t.widgetId && t.column.trim()) &&
+    // A locked filter is pinned to its default, so it needs one.
+    (!locked || defaultValue !== undefined);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -294,6 +316,33 @@ function FilterDefinitionDialog({
                 </option>
               ))}
             </select>
+          </div>
+
+          {/* Auto-wire: map one column name across every widget at once. */}
+          <div className="space-y-1">
+            <label className="text-sm font-medium">Auto-map by column</label>
+            <div className="flex items-center gap-2">
+              <Input
+                value={mapColumn}
+                onChange={(e) => setMapColumn(e.target.value)}
+                placeholder="column name (e.g. region)"
+                className="h-8 flex-1 text-xs"
+                aria-label="Auto-map column"
+              />
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="h-8 gap-1 text-xs"
+                onClick={mapAllWidgets}
+                disabled={!mapColumn.trim() || widgets.length === 0}
+              >
+                Map to all {widgets.length} widget{widgets.length !== 1 ? "s" : ""}
+              </Button>
+            </div>
+            <p className="text-[11px] text-muted-foreground">
+              Wires this filter to every widget on that column — tweak individual rows below.
+            </p>
           </div>
 
           {/* Widget targets */}
@@ -355,17 +404,126 @@ function FilterDefinitionDialog({
               </div>
             ))}
           </div>
+
+          {/* Default value */}
+          <div className="space-y-1">
+            <label className="text-sm font-medium">
+              Default value
+              {locked && <span className="ml-1 text-xs text-muted-foreground">(required for locked)</span>}
+            </label>
+            <DefaultValueInput kind={kind} value={defaultValue} onChange={setDefaultValue} />
+          </div>
+
+          {/* Required / locked */}
+          <div className="flex flex-wrap gap-4">
+            <label className="flex items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                checked={required}
+                onChange={(e) => setRequired(e.target.checked)}
+              />
+              Required
+              <span className="text-xs text-muted-foreground">(can&apos;t be cleared)</span>
+            </label>
+            <label className="flex items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                checked={locked}
+                onChange={(e) => setLocked(e.target.checked)}
+              />
+              Locked
+              <span className="text-xs text-muted-foreground">(pinned to default, read-only)</span>
+            </label>
+          </div>
         </div>
 
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)}>
             Cancel
           </Button>
-          <Button disabled={!canSubmit} onClick={() => onSubmit({ label, kind, targets, op })}>
+          <Button
+            disabled={!canSubmit}
+            onClick={() =>
+              onSubmit({ label, kind, targets, op, default: defaultValue, required, locked })
+            }
+          >
             {initial ? "Save" : "Add filter"}
           </Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
+  );
+}
+
+// ── Default-value input (shape by kind) ───────────────────────────────────────
+
+function DefaultValueInput({
+  kind,
+  value,
+  onChange,
+}: {
+  kind: FilterKind;
+  value: FilterValue | undefined;
+  onChange: (v: FilterValue | undefined) => void;
+}) {
+  const clear = (v: string) => (v.trim() === "" ? undefined : v);
+
+  if (kind === "select" || kind === "text") {
+    return (
+      <Input
+        value={typeof value === "string" ? value : ""}
+        onChange={(e) => onChange(clear(e.target.value))}
+        placeholder="(no default)"
+        className="h-8 text-xs"
+        aria-label="Default value"
+      />
+    );
+  }
+
+  if (kind === "multi-select") {
+    const items = Array.isArray(value) ? (value as string[]) : [];
+    return (
+      <Input
+        value={items.join(", ")}
+        onChange={(e) => {
+          const arr = e.target.value.split(",").map((s) => s.trim()).filter(Boolean);
+          onChange(arr.length ? arr : undefined);
+        }}
+        placeholder="comma,separated,values"
+        className="h-8 text-xs"
+        aria-label="Default values"
+      />
+    );
+  }
+
+  // date-range / number-range → two bounds
+  const arr = Array.isArray(value) ? value : [];
+  const lo = arr[0] ?? "";
+  const hi = arr[1] ?? "";
+  const isDate = kind === "date-range";
+  const setBounds = (a: string, b: string) => {
+    if (a === "" && b === "") return onChange(undefined);
+    onChange(isDate ? [String(a), String(b)] : [Number(a) || 0, Number(b) || 0]);
+  };
+  return (
+    <div className="flex items-center gap-2">
+      <Input
+        type={isDate ? "date" : "number"}
+        value={String(lo)}
+        onChange={(e) => setBounds(e.target.value, String(hi))}
+        placeholder={isDate ? "start" : "min"}
+        className="h-8 flex-1 text-xs"
+        aria-label="Default lower bound"
+      />
+      <span className="text-xs text-muted-foreground">–</span>
+      <Input
+        type={isDate ? "date" : "number"}
+        value={String(hi)}
+        onChange={(e) => setBounds(String(lo), e.target.value)}
+        placeholder={isDate ? "end" : "max"}
+        className="h-8 flex-1 text-xs"
+        aria-label="Default upper bound"
+      />
+    </div>
   );
 }

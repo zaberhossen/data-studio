@@ -1,6 +1,8 @@
 import { describe, it, expect } from "vitest";
 import { compileIR, CompileError } from "./compile";
 import { DuckDbDialect } from "./duckdb";
+import { PostgresDialect } from "./postgres";
+import { MySqlDialect } from "./mysql";
 import { rustFastPath } from "./capability";
 import { queryV1ToIR } from "./migrate";
 import { chooseExecution } from "./route";
@@ -8,6 +10,41 @@ import { col, type QueryIR } from "@/lib/query/ir";
 import type { Query } from "@/lib/types/analytics";
 
 const D = DuckDbDialect;
+
+describe("compileIR raw-mode `fields` selection", () => {
+  it("selects only the listed columns instead of *", () => {
+    const ir: QueryIR = {
+      version: 2,
+      source: { table: "orders" },
+      fields: [col("region"), col("amount")],
+      limit: 5,
+    };
+    const out = compileIR(ir, D, new Set(["region", "amount", "hidden"]));
+    expect(out.sql).toBe('SELECT "region", "amount" FROM "orders" LIMIT ?');
+    expect(out.columns.map((c) => c.name)).toEqual(["region", "amount"]);
+  });
+
+  it("windows resolve against the selected fields only", () => {
+    const ir: QueryIR = {
+      version: 2,
+      source: { table: "orders" },
+      fields: [col("region")],
+      windows: [{ fn: "sum", field: col("amount"), alias: "s" }],
+    };
+    expect(() => compileIR(ir, D, new Set(["region", "amount"]))).toThrow(CompileError);
+  });
+
+  it("is ignored when the query aggregates", () => {
+    const ir: QueryIR = {
+      version: 2,
+      source: { table: "orders" },
+      fields: [col("region")],
+      aggregations: [{ fn: "count" }],
+    };
+    const out = compileIR(ir, D, new Set(["region"]));
+    expect(out.sql).toBe('SELECT count(*) AS "count" FROM "orders"');
+  });
+});
 
 describe("compileIR windows + calculated fields (M10)", () => {
   it("wraps a grouped query and adds a running-total window over its output", () => {
@@ -347,5 +384,212 @@ describe("chooseExecution", () => {
   it("runs locally for files or non-aggregated queries", () => {
     expect(chooseExecution("file", agg)).toBe("local");
     expect(chooseExecution("postgres", raw)).toBe("local");
+  });
+});
+
+describe("compileIR numeric binning (M12 Stage 3)", () => {
+  it("bins a numeric dimension into fixed-width ranges (lower edge)", () => {
+    const ir: QueryIR = {
+      version: 2,
+      source: { table: "orders" },
+      dimensions: [{ field: col("amount"), bin: { width: 100 } }],
+      aggregations: [{ fn: "count" }],
+    };
+    const out = compileIR(ir, D, new Set(["amount"]));
+    expect(out.sql).toBe(
+      'SELECT floor("amount" / 100) * 100 AS "amount_bin", count(*) AS "count" ' +
+        'FROM "orders" GROUP BY floor("amount" / 100) * 100',
+    );
+    expect(out.columns[0]).toEqual({ name: "amount_bin", role: "dimension" });
+  });
+
+  it("rejects a non-positive bin width", () => {
+    const ir: QueryIR = {
+      version: 2,
+      source: { table: "orders" },
+      dimensions: [{ field: col("amount"), bin: { width: 0 } }],
+      aggregations: [{ fn: "count" }],
+    };
+    expect(() => compileIR(ir, D, new Set(["amount"]))).toThrow(CompileError);
+  });
+});
+
+describe("compileIR new aggregations (M12 Stage 3)", () => {
+  it("compiles variance + percentile on DuckDB", () => {
+    const ir: QueryIR = {
+      version: 2,
+      source: { table: "t" },
+      aggregations: [
+        { fn: "variance", field: col("x"), alias: "v" },
+        { fn: "percentile", field: col("x"), p: 0.9, alias: "p90" },
+      ],
+    };
+    const out = compileIR(ir, D, new Set(["x"]));
+    expect(out.sql).toBe(
+      'SELECT var_samp("x") AS "v", quantile_cont("x", 0.9) AS "p90" FROM "t"',
+    );
+  });
+
+  it("rejects a percentile outside (0,1)", () => {
+    const ir: QueryIR = {
+      version: 2,
+      source: { table: "t" },
+      aggregations: [{ fn: "percentile", field: col("x"), p: 1.5 }],
+    };
+    expect(() => compileIR(ir, D, new Set(["x"]))).toThrow(CompileError);
+  });
+
+  it("compiles count_if as a CASE over the predicate", () => {
+    const ir: QueryIR = {
+      version: 2,
+      source: { table: "orders" },
+      aggregations: [
+        { fn: "count_if", filter: { op: "gt", field: col("amount"), value: 100 }, alias: "big" },
+      ],
+    };
+    const out = compileIR(ir, D, new Set(["amount"]));
+    expect(out.sql).toBe(
+      'SELECT count(CASE WHEN "amount" > 100 THEN 1 END) AS "big" FROM "orders"',
+    );
+    // The predicate literal is inlined, never bound.
+    expect(out.params).toEqual([]);
+  });
+
+  it("compiles sum_if as a conditional sum", () => {
+    const ir: QueryIR = {
+      version: 2,
+      source: { table: "orders" },
+      aggregations: [
+        {
+          fn: "sum_if",
+          field: col("amount"),
+          filter: { op: "eq", field: col("status"), value: "paid" },
+          alias: "paid_total",
+        },
+      ],
+    };
+    const out = compileIR(ir, D, new Set(["amount", "status"]));
+    expect(out.sql).toBe(
+      `SELECT sum(CASE WHEN "status" = 'paid' THEN "amount" END) AS "paid_total" FROM "orders"`,
+    );
+  });
+
+  it("keeps params aligned when a count_if is also referenced in HAVING", () => {
+    const ir: QueryIR = {
+      version: 2,
+      source: { table: "orders" },
+      dimensions: [{ field: col("region") }],
+      aggregations: [
+        { fn: "count_if", filter: { op: "gt", field: col("amount"), value: 100 }, alias: "big" },
+      ],
+      having: { op: "gt", field: { kind: "aggregation", index: 0 }, value: 5 },
+      filters: { op: "eq", field: col("region"), value: "west" },
+    };
+    // Pushdown path (bound params): only the WHERE + HAVING values bind; the
+    // count_if predicate is inlined in both SELECT and the re-emitted HAVING.
+    const out = compileIR(ir, PostgresDialect, new Set(["region", "amount"]));
+    expect(out.params).toEqual(["west", 5]);
+    expect(out.sql).toContain('count(CASE WHEN "amount" > 100 THEN 1 END) AS "big"');
+    expect(out.sql).toContain("HAVING count(CASE WHEN \"amount\" > 100 THEN 1 END) > $2");
+  });
+});
+
+describe("dialect binning + aggregations across targets", () => {
+  it("Postgres percentile uses WITHIN GROUP; MySQL rejects it", () => {
+    const ir: QueryIR = {
+      version: 2,
+      source: { table: "t" },
+      aggregations: [{ fn: "percentile", field: col("x"), p: 0.95 }],
+    };
+    expect(compileIR(ir, PostgresDialect, new Set(["x"])).sql).toContain(
+      'percentile_cont(0.95) WITHIN GROUP (ORDER BY "x")',
+    );
+    expect(() => compileIR(ir, MySqlDialect, new Set(["x"]))).toThrow(CompileError);
+  });
+
+  it("MySQL bins with FLOOR + backtick idents", () => {
+    const ir: QueryIR = {
+      version: 2,
+      source: { table: "t" },
+      dimensions: [{ field: col("x"), bin: { width: 10 } }],
+      aggregations: [{ fn: "count" }],
+    };
+    expect(compileIR(ir, MySqlDialect, new Set(["x"])).sql).toContain("FLOOR(`x` / 10) * 10");
+  });
+});
+
+describe("compileIR multi-stage queries (M12 Stage 3)", () => {
+  const innerAgg: QueryIR = {
+    version: 2,
+    source: { table: "orders" },
+    dimensions: [{ field: col("region") }],
+    aggregations: [{ fn: "sum", field: col("amount") }],
+  };
+
+  it("nests an aggregated stage as a subquery and aggregates over its output", () => {
+    const ir: QueryIR = {
+      version: 2,
+      source: { query: innerAgg, alias: "s" },
+      aggregations: [{ fn: "avg", field: col("sum_amount"), alias: "avg_regional" }],
+    };
+    const out = compileIR(ir, D, new Set(["region", "amount", "sum_amount"]));
+    expect(out.sql).toBe(
+      'SELECT avg("sum_amount") AS "avg_regional" FROM (' +
+        'SELECT "region" AS "region", sum("amount") AS "sum_amount" ' +
+        'FROM "orders" GROUP BY "region") AS "s"',
+    );
+  });
+
+  it("defaults the stage alias to __stage", () => {
+    const ir: QueryIR = {
+      version: 2,
+      source: { query: innerAgg },
+      aggregations: [{ fn: "count" }],
+    };
+    const out = compileIR(ir, D, new Set(["region", "amount"]));
+    expect(out.sql).toContain(') AS "__stage"');
+  });
+
+  it("keeps bound params in order: inner filter before outer filter (Postgres)", () => {
+    const inner: QueryIR = {
+      version: 2,
+      source: { table: "orders" },
+      dimensions: [{ field: col("region") }],
+      aggregations: [{ fn: "sum", field: col("amount") }],
+      filters: { op: "gt", field: col("amount"), value: 10 },
+    };
+    const ir: QueryIR = {
+      version: 2,
+      source: { query: inner, alias: "s" },
+      fields: [col("region"), col("sum_amount")],
+      filters: { op: "gt", field: col("sum_amount"), value: 1000 },
+    };
+    const out = compileIR(ir, PostgresDialect, new Set(["region", "amount", "sum_amount"]));
+    // Inner WHERE ($1) is emitted before the outer WHERE ($2).
+    expect(out.params).toEqual([10, 1000]);
+    expect(out.sql).toContain('"amount" > $1');
+    expect(out.sql).toContain('"sum_amount" > $2');
+  });
+
+  it("second stage can bin + re-aggregate the first stage's output", () => {
+    const inner: QueryIR = {
+      version: 2,
+      source: { table: "orders" },
+      dimensions: [{ field: col("customer") }],
+      aggregations: [{ fn: "sum", field: col("amount") }],
+    };
+    const ir: QueryIR = {
+      version: 2,
+      source: { query: inner, alias: "per_customer" },
+      dimensions: [{ field: col("sum_amount"), bin: { width: 100 } }],
+      aggregations: [{ fn: "count" }],
+    };
+    const out = compileIR(ir, D, new Set(["customer", "amount", "sum_amount"]));
+    expect(out.sql).toBe(
+      'SELECT floor("sum_amount" / 100) * 100 AS "sum_amount_bin", count(*) AS "count" ' +
+        'FROM (SELECT "customer" AS "customer", sum("amount") AS "sum_amount" ' +
+        'FROM "orders" GROUP BY "customer") AS "per_customer" ' +
+        'GROUP BY floor("sum_amount" / 100) * 100',
+    );
   });
 });

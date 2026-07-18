@@ -11,6 +11,7 @@ import {
   DEFAULT_CANVAS,
   type CanvasConfig,
   type CanvasElement,
+  type CanvasFrame,
   type CanvasLayout,
   type Dashboard,
   type ElementContent,
@@ -87,6 +88,32 @@ export function ensureCanvasReady(dashboard: Dashboard): Dashboard {
   return { ...dashboard, canvas, widgets };
 }
 
+/**
+ * Ensure the dashboard is ready for GRID ("Page") mode: every TEXT element gets
+ * a grid box (stacked below existing content) the first time the dashboard
+ * converts to grid. The mirror of `ensureCanvasReady`. Returns the SAME object
+ * when nothing was missing.
+ */
+export function ensureGridReady(dashboard: Dashboard): Dashboard {
+  const missing = (dashboard.elements ?? []).filter((e) => e.kind === "text" && !e.layout);
+  if (missing.length === 0) return dashboard;
+
+  let bottom = [
+    ...dashboard.widgets,
+    ...(dashboard.elements ?? []).filter((e): e is CanvasElement & { layout: WidgetLayout } =>
+      Boolean(e.layout),
+    ),
+  ].reduce((max, item) => Math.max(max, item.layout.y + item.layout.h), 0);
+
+  const elements = (dashboard.elements ?? []).map((e) => {
+    if (e.kind !== "text" || e.layout) return e;
+    const layout: WidgetLayout = { x: 0, y: bottom, w: 6, h: 2 };
+    bottom += 2;
+    return { ...e, layout };
+  });
+  return { ...dashboard, elements };
+}
+
 /** The lowest empty y (px) below all current canvas items — where new items land. */
 export function nextCanvasY(dashboard: Dashboard): number {
   const bottoms: number[] = [];
@@ -102,4 +129,37 @@ export function nextCanvasY(dashboard: Dashboard): number {
 /** True when `w` should be laid out/scheduled as a query widget. */
 export function isQueryWidget(w: Widget): boolean {
   return (w.kind ?? "query") === "query";
+}
+
+// ── Frames (artboards) ────────────────────────────────────────────────────────
+
+export const DEFAULT_FRAME_SIZE = { w: 800, h: 600 };
+
+/** A fresh frame, placed to the right of the last frame (or at the origin). */
+export function defaultFrame(existing: CanvasFrame[]): CanvasFrame {
+  const rightmost = existing.reduce((max, f) => Math.max(max, f.x + f.w), 0);
+  return {
+    id: nextWidgetId("fr"),
+    name: `Frame ${existing.length + 1}`,
+    x: existing.length === 0 ? 24 : rightmost + 48,
+    y: 24,
+    ...DEFAULT_FRAME_SIZE,
+  };
+}
+
+/** Ids of the items whose CENTER lies inside the frame — they move with it. */
+export function frameMemberIds(
+  frame: Pick<CanvasFrame, "x" | "y" | "w" | "h">,
+  dashboard: Pick<Dashboard, "widgets" | "elements">,
+): string[] {
+  const inside = (b: CanvasLayout | undefined): boolean => {
+    if (!b) return false;
+    const cx = b.x + b.w / 2;
+    const cy = b.y + b.h / 2;
+    return cx >= frame.x && cx <= frame.x + frame.w && cy >= frame.y && cy <= frame.y + frame.h;
+  };
+  return [
+    ...dashboard.widgets.filter((w) => inside(w.canvasLayout)).map((w) => w.id),
+    ...(dashboard.elements ?? []).filter((e) => inside(e.canvasLayout)).map((e) => e.id),
+  ];
 }

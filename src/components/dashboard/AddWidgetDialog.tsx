@@ -41,7 +41,12 @@ import {
 } from "@/lib/query/ir-draft";
 import { queryV1ToIR } from "@/lib/query/compile";
 import type { QueryIR } from "@/lib/query/ir";
-import type { Widget, WidgetViz, WidgetVizType } from "@/lib/types/dashboard";
+import type {
+  Widget,
+  WidgetClickAction,
+  WidgetViz,
+  WidgetVizType,
+} from "@/lib/types/dashboard";
 import { AdvancedQueryBuilder } from "@/components/query/AdvancedQueryBuilder";
 import { SqlEditor } from "@/components/query/SqlEditor";
 import { VizFormatPanel } from "./VizFormatPanel";
@@ -54,6 +59,7 @@ export interface WidgetInput {
   ir?: QueryIR;
   sql?: string;
   viz: WidgetViz;
+  clickBehavior?: WidgetClickAction;
 }
 
 interface SourceOption {
@@ -69,8 +75,12 @@ interface AddWidgetDialogProps {
   tableNameForId: (sourceId: string) => string;
   /** When set, the dialog edits this widget instead of creating a new one. */
   initial?: Widget | null;
+  /** Other dashboards a "go to dashboard" click behavior can target. */
+  dashboards?: Array<{ id: string; name: string }>;
   onSubmit: (input: WidgetInput, editingId: string | null) => void;
 }
+
+type ClickType = "cross-filter" | "url" | "dashboard";
 
 const VIZ_OPTIONS: { value: WidgetVizType; label: string }[] = [
   { value: "bar", label: "Bar chart" },
@@ -104,6 +114,7 @@ export function AddWidgetDialog({
   getFields,
   tableNameForId,
   initial,
+  dashboards = [],
   onSubmit,
 }: AddWidgetDialogProps) {
   const editing = initial ?? null;
@@ -115,6 +126,34 @@ export function AddWidgetDialog({
   const [fields, setFields] = React.useState<Field[]>([]);
   const [draft, setDraft] = React.useState<IrDraft>(() => emptyIrDraft([]));
   const [sql, setSql] = React.useState("");
+
+  // Click behavior (default cross-filter). Flat fields → assembled on submit.
+  const [clickType, setClickType] = React.useState<ClickType>("cross-filter");
+  const [clickUrl, setClickUrl] = React.useState("");
+  const [clickNewTab, setClickNewTab] = React.useState(true);
+  const [clickDashboardId, setClickDashboardId] = React.useState("");
+  const [clickFilterId, setClickFilterId] = React.useState("");
+
+  const seedClickBehavior = (cb: WidgetClickAction | undefined) => {
+    setClickType(cb?.type ?? "cross-filter");
+    setClickUrl(cb?.type === "url" ? cb.url : "");
+    setClickNewTab(cb?.type === "url" ? cb.newTab !== false : true);
+    setClickDashboardId(cb?.type === "dashboard" ? cb.dashboardId : "");
+    setClickFilterId(cb?.type === "dashboard" ? cb.filterId ?? "" : "");
+  };
+
+  /** Assemble the click behavior; cross-filter is the default (stored as unset). */
+  const buildClickBehavior = (): WidgetClickAction | undefined => {
+    if (clickType === "url") {
+      return clickUrl.trim() ? { type: "url", url: clickUrl.trim(), newTab: clickNewTab } : undefined;
+    }
+    if (clickType === "dashboard") {
+      return clickDashboardId
+        ? { type: "dashboard", dashboardId: clickDashboardId, filterId: clickFilterId.trim() || undefined }
+        : undefined;
+    }
+    return undefined;
+  };
 
   // Seed the form whenever the dialog opens (new or edit).
   React.useEffect(() => {
@@ -128,6 +167,7 @@ export function AddWidgetDialog({
       setSql(editing.sql ?? "");
       const ir = widgetToIr(editing);
       setDraft(ir ? irToDraft(ir) : emptyIrDraft([]));
+      seedClickBehavior(editing.clickBehavior);
     } else {
       setSourceId(sources[0]?.id ?? "");
       setTitle("");
@@ -135,6 +175,7 @@ export function AddWidgetDialog({
       setMode("ir");
       setSql("");
       setDraft(emptyIrDraft([]));
+      seedClickBehavior(undefined);
     }
     // Only re-seed on open / target change, not on every keystroke.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -169,10 +210,11 @@ export function AddWidgetDialog({
   const submit = () => {
     if (!canSubmit) return;
     const resolvedTitle = title.trim() || (mode === "ir" ? "Advanced widget" : "SQL widget");
+    const clickBehavior = buildClickBehavior();
     const input: WidgetInput =
       mode === "ir"
-        ? { title: resolvedTitle, sourceId, queryKind: "ir", ir: compiled.ir!, viz }
-        : { title: resolvedTitle, sourceId, queryKind: "sql", sql, viz };
+        ? { title: resolvedTitle, sourceId, queryKind: "ir", ir: compiled.ir!, viz, clickBehavior }
+        : { title: resolvedTitle, sourceId, queryKind: "sql", sql, viz, clickBehavior };
     onSubmit(input, editing?.id ?? null);
     onOpenChange(false);
   };
@@ -280,6 +322,100 @@ export function AddWidgetDialog({
           <div className="rounded-lg border border-border p-3">
             <p className="mb-3 text-sm font-medium">Format &amp; style</p>
             <VizFormatPanel viz={viz} fields={fields} onChange={(p) => setViz((cur) => ({ ...cur, ...p }))} />
+          </div>
+
+          {/* ── Click behavior ─────────────────────────────────────────── */}
+          <div className="rounded-lg border border-border p-3">
+            <p className="mb-1 text-sm font-medium">Click behavior</p>
+            <p className="mb-3 text-xs text-muted-foreground">
+              What happens when a data point (chart mark or table cell) is clicked.
+            </p>
+            <div className="mb-3 inline-flex rounded-md border border-border bg-muted p-0.5">
+              {(
+                [
+                  ["cross-filter", "Cross-filter"],
+                  ["url", "Open URL"],
+                  ["dashboard", "Go to dashboard"],
+                ] as Array<[ClickType, string]>
+              ).map(([val, label]) => (
+                <Button
+                  key={val}
+                  type="button"
+                  size="sm"
+                  variant={clickType === val ? "secondary" : "ghost"}
+                  className="h-7"
+                  onClick={() => setClickType(val)}
+                >
+                  {label}
+                </Button>
+              ))}
+            </div>
+
+            {clickType === "cross-filter" && (
+              <p className="text-xs text-muted-foreground">
+                Clicking filters the other widgets on the clicked value (default).
+              </p>
+            )}
+
+            {clickType === "url" && (
+              <div className="space-y-2">
+                <Input
+                  value={clickUrl}
+                  onChange={(e) => setClickUrl(e.target.value)}
+                  placeholder="https://example.com/records/{{value}}"
+                  className="font-mono text-xs"
+                  aria-label="Click URL"
+                />
+                <p className="text-[11px] text-muted-foreground">
+                  Use <code className="font-mono">{"{{value}}"}</code> and{" "}
+                  <code className="font-mono">{"{{column}}"}</code> — the clicked value and its column.
+                </p>
+                <label className="flex items-center gap-2 text-xs">
+                  <input
+                    type="checkbox"
+                    checked={clickNewTab}
+                    onChange={(e) => setClickNewTab(e.target.checked)}
+                  />
+                  Open in a new tab
+                </label>
+              </div>
+            )}
+
+            {clickType === "dashboard" && (
+              <div className="space-y-2">
+                {dashboards.length === 0 ? (
+                  <p className="text-xs text-muted-foreground">
+                    No other dashboards to link to.
+                  </p>
+                ) : (
+                  <>
+                    <Select value={clickDashboardId} onValueChange={setClickDashboardId}>
+                      <SelectTrigger className="h-8" aria-label="Target dashboard">
+                        <SelectValue placeholder="Target dashboard" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {dashboards.map((d) => (
+                          <SelectItem key={d.id} value={d.id}>
+                            {d.name}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    <Input
+                      value={clickFilterId}
+                      onChange={(e) => setClickFilterId(e.target.value)}
+                      placeholder="filter id to seed (optional)"
+                      className="h-8 text-xs"
+                      aria-label="Target filter id"
+                    />
+                    <p className="text-[11px] text-muted-foreground">
+                      The clicked value is passed to the target dashboard&apos;s filter with this id
+                      (via <code className="font-mono">?f.&lt;id&gt;</code>).
+                    </p>
+                  </>
+                )}
+              </div>
+            )}
           </div>
         </div>
 

@@ -152,6 +152,23 @@ export type SqlWorkerRequest =
       sql: string;
     }
   | {
+      // EXPLORE: materialize `sql` against `datasetId` (reusing the result
+      // cache when it already ran) and register the result set as its OWN
+      // dataset under `targetId` — so the IR builder can query the result of a
+      // raw SQL statement like any other table ("GUI on SQL").
+      type: "promote";
+      requestId: number;
+      datasetId: string;
+      sql: string;
+      targetId: string;
+    }
+  | {
+      // Best-effort interrupt of the statement currently executing inside
+      // DuckDB (fire-and-forget; the caller rejects its pending promise
+      // itself). No reply is sent.
+      type: "cancel";
+    }
+  | {
       // Drop a dataset's table + cached results (dashboard removed a source).
       type: "evict";
       datasetId: string;

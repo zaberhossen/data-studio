@@ -5,6 +5,7 @@
 
 import type { AggFn, RelativeDate, TemporalUnit } from "@/lib/query/ir";
 import type { Dialect } from "./dialect";
+import { CompileError, percentileFraction } from "./compile";
 
 const INTERVAL_UNIT: Record<RelativeDate["unit"], string> = {
   day: "day",
@@ -43,7 +44,11 @@ export const DuckDbDialect: Dialect = {
     }
   },
 
-  aggregate(fn: AggFn, argSql: string | null, distinct: boolean): string {
+  numericBin(width: number, colSql: string): string {
+    return `floor(${colSql} / ${width}) * ${width}`;
+  },
+
+  aggregate(fn: AggFn, argSql: string | null, distinct: boolean, p?: number): string {
     if (fn === "count") {
       if (argSql === null) return "count(*)";
       return distinct ? `count(distinct ${argSql})` : `count(${argSql})`;
@@ -65,6 +70,13 @@ export const DuckDbDialect: Dialect = {
         return `median(${argSql})`;
       case "stddev":
         return `stddev(${argSql})`;
+      case "variance":
+        return `var_samp(${argSql})`;
+      case "percentile":
+        return `quantile_cont(${argSql}, ${percentileFraction(p)})`;
+      case "count_if":
+      case "sum_if":
+        throw new CompileError(`"${fn}" is compiled as a conditional aggregate, not here.`);
     }
   },
 

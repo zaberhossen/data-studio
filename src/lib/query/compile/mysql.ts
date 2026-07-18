@@ -52,6 +52,10 @@ export const MySqlDialect: Dialect = {
     }
   },
 
+  numericBin(width: number, colSql: string): string {
+    return `FLOOR(${colSql} / ${width}) * ${width}`;
+  },
+
   aggregate(fn: AggFn, argSql: string | null, distinct: boolean): string {
     if (fn === "count") {
       if (argSql === null) return "count(*)";
@@ -70,9 +74,16 @@ export const MySqlDialect: Dialect = {
         return `max(${inner})`;
       case "stddev":
         return `stddev_samp(${argSql})`;
+      case "variance":
+        return `var_samp(${argSql})`;
       case "median":
         // MySQL has no percentile/median aggregate.
         throw new CompileError("MEDIAN is not supported on MySQL sources.");
+      case "percentile":
+        throw new CompileError("Percentile is not supported on MySQL sources.");
+      case "count_if":
+      case "sum_if":
+        throw new CompileError(`"${fn}" is compiled as a conditional aggregate, not here.`);
     }
   },
 

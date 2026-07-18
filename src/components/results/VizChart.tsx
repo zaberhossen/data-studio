@@ -24,11 +24,13 @@ import {
   Cell,
   ComposedChart,
   Label,
+  LabelList,
   Legend,
   Line,
   LineChart,
   Pie,
   PieChart,
+  ReferenceLine,
   ResponsiveContainer,
   Scatter,
   ScatterChart,
@@ -81,11 +83,38 @@ export function VizChart({ table, viz, onCategoryClick }: Props) {
   if (data.series.length === 0) return <Empty />;
 
   const color = (key: string, i: number) => viz.colors?.[key] ?? seriesColor(i);
+  const seriesName = (s: { key: string; label: string }) =>
+    viz.seriesLabels?.[s.key] ?? s.label;
   const showLegend = data.series.length >= 2 && viz.legend !== "none";
   const legendEl = showLegend ? <Legend {...legendProps(viz.legend)} /> : null;
   const percent = viz.stack === "percent";
   const stacked = viz.stack === "stacked" || percent;
   const yTickFmt = percent ? (v: number) => `${Math.round(v * 100)}%` : axisFmt;
+  // Data labels (bar/line/area/combo, skipped for percent-stacks where they
+  // would read as raw values on a 0–1 axis).
+  const markLabels =
+    viz.dataLabels && !percent ? (
+      <LabelList
+        position="top"
+        fontSize={10}
+        fill="hsl(var(--muted-foreground))"
+        formatter={(v: React.ReactNode) => (typeof v === "number" ? axisFmt(v) : String(v ?? ""))}
+      />
+    ) : null;
+  const refLine =
+    viz.refLineValue !== undefined && !percent ? (
+      <ReferenceLine
+        y={viz.refLineValue}
+        stroke="hsl(var(--muted-foreground))"
+        strokeDasharray="4 4"
+        ifOverflow="extendDomain"
+        label={
+          viz.refLineLabel
+            ? { value: viz.refLineLabel, position: "insideTopRight", fontSize: 10, fill: "hsl(var(--muted-foreground))" }
+            : undefined
+        }
+      />
+    ) : null;
 
   const handleClick =
     onCategoryClick && viz.type !== "pie"
@@ -99,6 +128,10 @@ export function VizChart({ table, viz, onCategoryClick }: Props) {
       {viz.xTitle ? <Label value={viz.xTitle} position="insideBottom" offset={-4} fill="hsl(var(--muted-foreground))" fontSize={11} /> : null}
     </XAxis>
   );
+  const linearDomain =
+    viz.yMin !== undefined || viz.yMax !== undefined
+      ? ([viz.yMin ?? "auto", viz.yMax ?? "auto"] as [number | "auto", number | "auto"])
+      : undefined;
   const yAxis = (
     <YAxis
       tick={TICK}
@@ -107,8 +140,8 @@ export function VizChart({ table, viz, onCategoryClick }: Props) {
       width={56}
       tickFormatter={yTickFmt as (v: number) => string}
       scale={viz.yScale === "log" ? "log" : "auto"}
-      domain={viz.yScale === "log" ? [1, "auto"] : undefined}
-      allowDataOverflow={viz.yScale === "log"}
+      domain={viz.yScale === "log" ? [1, "auto"] : linearDomain}
+      allowDataOverflow={viz.yScale === "log" || linearDomain !== undefined}
     >
       {viz.yTitle ? <Label value={viz.yTitle} angle={-90} position="insideLeft" fill="hsl(var(--muted-foreground))" fontSize={11} /> : null}
     </YAxis>
@@ -128,7 +161,14 @@ export function VizChart({ table, viz, onCategoryClick }: Props) {
   const grid = <CartesianGrid stroke={GRID} strokeDasharray="3 3" vertical={false} />;
 
   return (
-    <div className="h-full min-h-0">
+    <div className="flex h-full min-h-0 flex-col">
+      {data.dropped > 0 && (
+        <p className="shrink-0 pb-1 text-right text-[10px] text-muted-foreground">
+          +{data.dropped} series beyond the palette cap not shown — narrow the series
+          selection to choose which.
+        </p>
+      )}
+      <div className="min-h-0 flex-1">
       <ResponsiveContainer width="100%" height="100%">
         {viz.type === "pie" ? (
           <PieChart>
@@ -157,8 +197,11 @@ export function VizChart({ table, viz, onCategoryClick }: Props) {
             {yAxis}
             {tooltip}
             {legendEl}
+            {refLine}
             {data.series.map((s, i) => (
-              <Line key={s.key} type="monotone" dataKey={s.key} name={s.label} stroke={color(s.key, i)} strokeWidth={2} dot={false} isAnimationActive={false} />
+              <Line key={s.key} type="monotone" dataKey={s.key} name={seriesName(s)} stroke={color(s.key, i)} strokeWidth={2} dot={false} isAnimationActive={false}>
+                {markLabels}
+              </Line>
             ))}
           </LineChart>
         ) : viz.type === "area" ? (
@@ -168,19 +211,22 @@ export function VizChart({ table, viz, onCategoryClick }: Props) {
             {yAxis}
             {tooltip}
             {legendEl}
+            {refLine}
             {data.series.map((s, i) => (
               <Area
                 key={s.key}
                 type="monotone"
                 dataKey={s.key}
-                name={s.label}
+                name={seriesName(s)}
                 stackId={stacked ? "a" : undefined}
                 stroke={color(s.key, i)}
                 fill={color(s.key, i)}
                 fillOpacity={0.25}
                 strokeWidth={2}
                 isAnimationActive={false}
-              />
+              >
+                {markLabels}
+              </Area>
             ))}
           </AreaChart>
         ) : viz.type === "combo" ? (
@@ -190,11 +236,16 @@ export function VizChart({ table, viz, onCategoryClick }: Props) {
             {yAxis}
             {tooltip}
             {legendEl}
+            {refLine}
             {data.series.map((s, i) =>
               viz.lineKeys?.includes(s.key) ? (
-                <Line key={s.key} type="monotone" dataKey={s.key} name={s.label} stroke={color(s.key, i)} strokeWidth={2} dot={false} isAnimationActive={false} />
+                <Line key={s.key} type="monotone" dataKey={s.key} name={seriesName(s)} stroke={color(s.key, i)} strokeWidth={2} dot={false} isAnimationActive={false}>
+                  {markLabels}
+                </Line>
               ) : (
-                <Bar key={s.key} dataKey={s.key} name={s.label} fill={color(s.key, i)} radius={[4, 4, 0, 0]} isAnimationActive={false} />
+                <Bar key={s.key} dataKey={s.key} name={seriesName(s)} fill={color(s.key, i)} radius={[4, 4, 0, 0]} isAnimationActive={false}>
+                  {markLabels}
+                </Bar>
               ),
             )}
           </ComposedChart>
@@ -206,20 +257,24 @@ export function VizChart({ table, viz, onCategoryClick }: Props) {
             {yAxis}
             {tooltip}
             {legendEl}
+            {refLine}
             {data.series.map((s, i) => (
               <Bar
                 key={s.key}
                 dataKey={s.key}
-                name={s.label}
+                name={seriesName(s)}
                 fill={color(s.key, i)}
                 stackId={stacked ? "a" : undefined}
                 radius={stacked ? 0 : [4, 4, 0, 0]}
                 isAnimationActive={false}
-              />
+              >
+                {markLabels}
+              </Bar>
             ))}
           </BarChart>
         )}
       </ResponsiveContainer>
+      </div>
     </div>
   );
 }

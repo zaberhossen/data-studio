@@ -8,7 +8,7 @@
 import { NextResponse } from "next/server";
 import { resolveAuth } from "@/lib/auth/api";
 import { getShareLinkStore } from "@/lib/server/share-store";
-import { errorResponse } from "@/lib/server/api-helpers";
+import { errorResponse, mutationRateLimit } from "@/lib/server/api-helpers";
 import { clientIp, logAudit } from "@/lib/server/audit";
 import type { DashboardSnapshot } from "@/lib/types/share";
 
@@ -31,6 +31,8 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
   const { id } = await params;
   const auth = await resolveAuth();
   if ("error" in auth) return auth.error;
+  const limited = mutationRateLimit(auth.ctx);
+  if (limited) return limited;
 
   let body: { snapshot?: DashboardSnapshot; expiresAt?: string | null };
   try {

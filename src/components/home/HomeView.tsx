@@ -114,7 +114,7 @@ export function HomeView() {
           <button
             type="button"
             onClick={() => setDialogOpen(true)}
-            className="flex min-h-[92px] items-center justify-center gap-2 rounded-xl border border-dashed border-border text-sm text-muted-foreground transition-colors hover:border-primary/50 hover:bg-accent hover:text-foreground"
+            className="flex min-h-[92px] items-center justify-center gap-2 rounded-md border border-dashed border-border text-sm text-muted-foreground transition-colors hover:border-primary/50 hover:bg-accent hover:text-foreground"
           >
             <Plus className="h-4 w-4" />
             Add source
@@ -162,7 +162,7 @@ function SourceCard({ source, onOpen }: { source: SourceView; onOpen: () => void
     <button
       type="button"
       onClick={onOpen}
-      className="group flex flex-col gap-3 rounded-xl border border-border bg-card p-4 text-left transition-colors hover:border-primary/40 hover:bg-accent"
+      className="group flex flex-col gap-3 rounded-md border border-border bg-card p-4 text-left transition-colors hover:border-primary/40 hover:bg-accent"
     >
       <div className="flex items-center gap-2.5">
         <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-muted text-muted-foreground">

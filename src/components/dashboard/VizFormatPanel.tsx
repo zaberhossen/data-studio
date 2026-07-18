@@ -39,8 +39,114 @@ export function VizFormatPanel({ viz, fields, onChange }: Props) {
   const patchNf = (p: Partial<NonNullable<WidgetViz["numberFormat"]>>) =>
     onChange({ numberFormat: { ...nf, ...p } });
 
+  // The series the chart will draw — mirrors chart-data's defaults so the
+  // rename/color editor matches what actually renders.
+  const activeSeries =
+    viz.yKeys && viz.yKeys.length > 0
+      ? viz.yKeys
+      : viz.yKey
+        ? [viz.yKey]
+        : numericFields.filter((f) => f.name !== viz.xKey).map((f) => f.name);
+
   return (
     <div className="space-y-5">
+      {/* ── Data (axis/series assignment) ───────────────────────────── */}
+      {(CARTESIAN.has(t) || t === "pie") && fields.length > 0 && (
+        <>
+          <Row label={t === "pie" ? "Labels" : "X axis"}>
+            <ColumnSelect
+              value={viz.xKey}
+              fields={fields}
+              placeholder="(first column)"
+              onChange={(v) => onChange({ xKey: v })}
+            />
+          </Row>
+          {numericFields.length > 0 && (
+            <Row
+              label={t === "pie" ? "Value" : "Series"}
+              hint={t === "pie" ? undefined : "Measure columns to draw"}
+            >
+              <div className="flex flex-wrap gap-1.5">
+                {numericFields.map((f) => {
+                  const on = activeSeries.includes(f.name);
+                  return (
+                    <Button
+                      key={f.name}
+                      type="button"
+                      size="sm"
+                      variant={on ? "secondary" : "outline"}
+                      className="h-7"
+                      onClick={() => {
+                        const set = new Set(activeSeries);
+                        if (on) set.delete(f.name);
+                        else set.add(f.name);
+                        if (set.size === 0) return; // keep at least one series
+                        onChange({ yKeys: [...set], yKey: undefined });
+                      }}
+                    >
+                      {f.label}
+                    </Button>
+                  );
+                })}
+              </div>
+            </Row>
+          )}
+        </>
+      )}
+
+      {/* ── Per-series rename + color ───────────────────────────────── */}
+      {CARTESIAN.has(t) && activeSeries.length > 0 && (
+        <Row label="Series style" hint="Rename and recolor each series">
+          <div className="space-y-1.5">
+            {activeSeries.map((key) => (
+              <div key={key} className="flex items-center gap-2">
+                <span className="w-28 truncate font-mono text-xs text-muted-foreground" title={key}>
+                  {key}
+                </span>
+                <Input
+                  value={viz.seriesLabels?.[key] ?? ""}
+                  onChange={(e) => {
+                    const next = { ...(viz.seriesLabels ?? {}) };
+                    if (e.target.value) next[key] = e.target.value;
+                    else delete next[key];
+                    onChange({ seriesLabels: Object.keys(next).length ? next : undefined });
+                  }}
+                  placeholder={key}
+                  className="h-8 flex-1"
+                  aria-label={`Rename ${key}`}
+                />
+                <input
+                  type="color"
+                  value={cssColorToHex(viz.colors?.[key])}
+                  onChange={(e) => {
+                    const next = { ...(viz.colors ?? {}), [key]: e.target.value };
+                    onChange({ colors: next });
+                  }}
+                  aria-label={`Color for ${key}`}
+                  className="h-8 w-9 cursor-pointer rounded-md border border-strong bg-surface-100 p-0.5"
+                />
+                {viz.colors?.[key] && (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    className="h-7 w-7"
+                    aria-label={`Reset color for ${key}`}
+                    onClick={() => {
+                      const next = { ...(viz.colors ?? {}) };
+                      delete next[key];
+                      onChange({ colors: Object.keys(next).length ? next : undefined });
+                    }}
+                  >
+                    <Trash2 className="h-3 w-3" />
+                  </Button>
+                )}
+              </div>
+            ))}
+          </div>
+        </Row>
+      )}
+
       {/* ── Series / layout ─────────────────────────────────────────── */}
       {STACKABLE.has(t) && (
         <Row label="Stacking">
@@ -208,6 +314,67 @@ export function VizFormatPanel({ viz, fields, onChange }: Props) {
               onChange={(v) => onChange({ yScale: v as WidgetViz["yScale"] })}
             />
           </Row>
+          {(viz.yScale ?? "linear") === "linear" && (
+            <Row label="Y range" hint="Empty → auto">
+              <div className="flex items-center gap-2">
+                <Input
+                  type="number"
+                  value={viz.yMin ?? ""}
+                  onChange={(e) =>
+                    onChange({ yMin: e.target.value === "" ? undefined : Number(e.target.value) })
+                  }
+                  placeholder="min"
+                  className="h-8 w-24"
+                  aria-label="Y min"
+                />
+                <span className="text-xs text-muted-foreground">–</span>
+                <Input
+                  type="number"
+                  value={viz.yMax ?? ""}
+                  onChange={(e) =>
+                    onChange({ yMax: e.target.value === "" ? undefined : Number(e.target.value) })
+                  }
+                  placeholder="max"
+                  className="h-8 w-24"
+                  aria-label="Y max"
+                />
+              </div>
+            </Row>
+          )}
+          <Row label="Reference line" hint="A horizontal goal/threshold line">
+            <div className="flex flex-wrap items-center gap-2">
+              <Input
+                type="number"
+                value={viz.refLineValue ?? ""}
+                onChange={(e) =>
+                  onChange({
+                    refLineValue: e.target.value === "" ? undefined : Number(e.target.value),
+                  })
+                }
+                placeholder="value"
+                className="h-8 w-28"
+                aria-label="Reference line value"
+              />
+              <Input
+                value={viz.refLineLabel ?? ""}
+                onChange={(e) => onChange({ refLineLabel: e.target.value || undefined })}
+                placeholder="label (optional)"
+                className="h-8 w-36"
+                aria-label="Reference line label"
+                disabled={viz.refLineValue === undefined}
+              />
+            </div>
+          </Row>
+          <Row label="Data labels">
+            <label className="flex items-center gap-1.5 text-xs">
+              <input
+                type="checkbox"
+                checked={viz.dataLabels ?? false}
+                onChange={(e) => onChange({ dataLabels: e.target.checked || undefined })}
+              />
+              Show values on marks
+            </label>
+          </Row>
         </>
       )}
 
@@ -248,6 +415,20 @@ export function VizFormatPanel({ viz, fields, onChange }: Props) {
                 aria-label="Decimals"
               />
             </label>
+            <Input
+              value={nf.prefix ?? ""}
+              onChange={(e) => patchNf({ prefix: e.target.value || undefined })}
+              placeholder="prefix"
+              className="h-8 w-20"
+              aria-label="Value prefix"
+            />
+            <Input
+              value={nf.suffix ?? ""}
+              onChange={(e) => patchNf({ suffix: e.target.value || undefined })}
+              placeholder="suffix"
+              className="h-8 w-20"
+              aria-label="Value suffix"
+            />
           </div>
         </Row>
       )}
@@ -404,6 +585,11 @@ function ConditionalEditor({
       )}
     </div>
   );
+}
+
+/** `<input type="color">` only accepts hex — pass hex through, default gray. */
+function cssColorToHex(color: string | undefined): string {
+  return color && /^#[0-9a-fA-F]{6}$/.test(color) ? color : "#8b8b8b";
 }
 
 // ── Small shared controls ───────────────────────────────────────────────────

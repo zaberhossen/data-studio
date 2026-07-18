@@ -34,13 +34,13 @@ import {
   compileIrDraft,
   emptyIrDraft,
   irToDraft,
-  allowlistFromFields,
   type IrCompileResult,
   type IrDraft,
 } from "@/lib/query/ir-draft";
 import { compileIR, DuckDbDialect, queryV1ToIR } from "@/lib/query/compile";
 import { chooseExecution } from "@/lib/query/compile/route";
-import type { QueryIR } from "@/lib/query/ir";
+import { suggestVizType } from "@/lib/query/suggest-viz";
+import { irColumns, isQuerySource, type QueryIR } from "@/lib/query/ir";
 import type { DataSourceKind } from "@/lib/types/datasource";
 import type {
   ExecutionMode,
@@ -62,6 +62,8 @@ import {
   type HistoryStore,
   type NewHistoryEntry,
 } from "@/lib/history/store";
+import { tableNameFor, type SqlColumn } from "@/lib/types/sql";
+import { format as formatSql } from "sql-formatter";
 
 // The query panel toggles builder ⇄ advanced (ir) ⇄ sql.
 export type WorkspaceMode = Extract<QueryKind, "builder" | "ir" | "sql">;
@@ -71,6 +73,28 @@ export type ExecutionSetting = "auto" | ExecutionMode;
 
 /** The dataset id a pushdown result is ingested under (its own DuckDB table). */
 const PUSHDOWN_DATASET = "__pushdown";
+
+/** The dataset id an explored SQL result is promoted under ("GUI on SQL"). */
+const EXPLORE_DATASET = "__explore";
+
+/** An active "Explore results" session: the IR builder runs over the promoted
+ *  result of a raw SQL statement instead of the active source's dataset. */
+export interface ExploreSession {
+  /** The statement whose result was promoted (restored by `exitExplore`). */
+  sql: string;
+  fields: Field[];
+  rowCount: number;
+}
+
+/** Derive builder `Field[]` from a promoted result's column schema. */
+function fieldsFromSqlColumns(columns: SqlColumn[]): Field[] {
+  return columns.map((c) => ({
+    name: c.name,
+    label: c.name,
+    role: c.type === "number" ? "metric" : "dimension",
+    dataType: c.type === "bool" ? "boolean" : c.type,
+  }));
+}
 
 /** Source kinds the pushdown endpoint (`/run`) can actually execute against. */
 const PUSHDOWN_KINDS: ReadonlySet<DataSourceKind> = new Set(["postgres", "mysql"]);
@@ -82,11 +106,23 @@ function toWorkspaceMode(kind: QueryKind): WorkspaceMode {
   return kind === "sql" ? "sql" : "ir";
 }
 
+/** Force the INNERMOST physical source onto the resident table, preserving any
+ *  multi-stage nesting (a nested-query source keeps its shape; only the base
+ *  table is rebased). */
+function rebaseSource(ir: QueryIR, table: string): QueryIR {
+  if (isQuerySource(ir.source)) {
+    return { ...ir, source: { ...ir.source, query: rebaseSource(ir.source.query, table) } };
+  }
+  return { ...ir, source: { table } };
+}
+
 /** Compile an IR to self-contained (inlined) SQL for the LOCAL DuckDB path,
- *  forcing the FROM onto the resident table regardless of what was saved. */
-function localIrSql(ir: QueryIR, fields: Field[], table: string): string {
-  const localIr: QueryIR = { ...ir, source: { table } };
-  return compileIR(localIr, DuckDbDialect, allowlistFromFields(fields), { inline: true }).sql;
+ *  forcing the FROM onto the resident table regardless of what was saved. The
+ *  allowlist is `irColumns` (the validated IR's own refs) so multi-stage output
+ *  columns — not just physical source columns — are permitted. */
+function localIrSql(ir: QueryIR, table: string): string {
+  const localIr = rebaseSource(ir, table);
+  return compileIR(localIr, DuckDbDialect, irColumns(localIr), { inline: true }).sql;
 }
 
 /** What a save dialog collects; the definition itself comes from live state. */
@@ -120,9 +156,32 @@ export interface QueryWorkspace {
   // ── Execution (existing pipeline: sets the results-region request) ──────────
   request: ResultRequest | null;
   runBuilder: (query: Query) => void;
-  runSql: (sql: string) => void;
+  /** `maxRows` caps the whole result set (the SQL page's Limit select). */
+  runSql: (sql: string, opts?: { maxRows?: number }) => void;
   /** Run the advanced (IR) builder — LOCAL (inline SQL) or PUSHDOWN per mode. */
   runIr: () => void;
+  /**
+   * Atomically replace the draft AND run it (drill-through actions) — avoids
+   * the set-state → stale `compiledIr` race a setIrDraft+runIr pair would hit.
+   */
+  applyDraftAndRun: (next: IrDraft) => void;
+  /** Reject the in-flight run and best-effort interrupt DuckDB. */
+  cancel: () => void;
+  /**
+   * "Explore results": promote the last SQL run's result set into its own
+   * dataset and open the IR builder over it. Available on a settled SQL run.
+   */
+  exploreResults: () => Promise<void>;
+  /** The active explore session, or null (normal source-backed editing). */
+  explore: ExploreSession | null;
+  /** Leave the explore session and restore the SQL editor + its statement. */
+  exitExplore: () => void;
+  /**
+   * One-way "Convert to SQL" (Metabase-style): compile the current IR to a
+   * formatted DuckDB statement, load it into the SQL editor as a new scratch
+   * query, and return it (null when the IR doesn't compile).
+   */
+  convertToSql: () => string | null;
   /** Advanced-query execution setting (auto / force local / force pushdown). */
   executionMode: ExecutionSetting;
   setExecutionMode: (mode: ExecutionSetting) => void;
@@ -196,14 +255,28 @@ export function useQueryWorkspace(
 ): QueryWorkspace {
   const store = React.useMemo<SavedQueryStore>(() => getSavedQueryStore(), []);
   const historyStore = React.useMemo<HistoryStore>(() => getHistoryStore(), []);
-  const fields = sources.activeFields;
+  // Explore session ("GUI on SQL"): while active, the builder's fields + table
+  // point at the promoted result set instead of the active source's dataset.
+  const [explore, setExplore] = React.useState<ExploreSession | null>(null);
+  const fields = explore ? explore.fields : sources.activeFields;
+  const tableName = explore ? tableNameFor(EXPLORE_DATASET) : engine.tableName;
   const activeId = sources.activeId;
+  // Stable (useCallback) engine methods — safe in dependency arrays, unlike the
+  // engine object itself (whose identity changes as `loading` toggles).
+  const { evictDataset, promoteSqlResult, cancelSql } = engine;
 
   const [mode, setMode] = React.useState<WorkspaceMode>("ir");
   const [draft, setDraft] = React.useState<QueryDraft>(() => emptyDraft(fields));
   const [irDraft, setIrDraft] = React.useState<IrDraft>(() => emptyIrDraft(fields));
   const [sql, setSql] = React.useState("");
   const [viz, setViz] = React.useState<WidgetViz>({ type: "bar" });
+  // Auto-viz: suggest a chart type on Run UNTIL the user picks one themselves
+  // (or opens a saved query, whose stored viz is deliberate).
+  const vizTouched = React.useRef(false);
+  const setVizUser = React.useCallback((next: WidgetViz) => {
+    vizTouched.current = true;
+    setViz(next);
+  }, []);
   const [request, setRequest] = React.useState<ResultRequest | null>(null);
   const [executionMode, setExecutionMode] = React.useState<ExecutionSetting>("auto");
 
@@ -226,19 +299,24 @@ export function useQueryWorkspace(
   // is invalid for a new schema that doesn't have that column at all, so a
   // source switch forces a reset instead of just "fill if blank" — otherwise
   // compiling the stale draft fails with "Unknown metric/group-by column".
+  // NOTE: seeds always come from the SOURCE's fields (not the explore
+  // override) — a source switch also tears down any explore session, since the
+  // promoted result belonged to the previous source's editing context.
+  const sourceFields = sources.activeFields;
   const lastFieldsSourceId = React.useRef<string | null>(null);
   React.useEffect(() => {
-    if (fields.length === 0) return;
+    if (sourceFields.length === 0) return;
     const isNewSource = lastFieldsSourceId.current !== activeId;
     lastFieldsSourceId.current = activeId;
+    if (isNewSource) setExplore(null);
     setDraft((prev) =>
-      isNewSource || !(prev.groupBy || prev.filters.length) ? emptyDraft(fields) : prev,
+      isNewSource || !(prev.groupBy || prev.filters.length) ? emptyDraft(sourceFields) : prev,
     );
-    setIrDraft((prev) => (isNewSource ? emptyIrDraft(fields) : prev));
+    setIrDraft((prev) => (isNewSource ? emptyIrDraft(sourceFields) : prev));
     setSql((prev) =>
-      isNewSource || !prev.trim() ? sampleSql(fields, engine.tableName) : prev,
+      isNewSource || !prev.trim() ? sampleSql(sourceFields, engine.tableName) : prev,
     );
-  }, [fields, activeId, engine.tableName]);
+  }, [sourceFields, activeId, engine.tableName]);
 
   const refreshList = React.useCallback(async () => {
     setListLoading(true);
@@ -303,13 +381,19 @@ export function useQueryWorkspace(
   // The compiled advanced (IR) query — validated against the active dataset,
   // targeting the resident local table so it can run through the SQL path.
   const compiledIr = React.useMemo<IrCompileResult>(
-    () => compileIrDraft(irDraft, fields, engine.tableName),
-    [irDraft, fields, engine.tableName],
+    () => compileIrDraft(irDraft, fields, tableName),
+    [irDraft, fields, tableName],
   );
 
   // ── Advanced-query execution routing (M5) ───────────────────────────────────
   const activeKind = sources.activeSource?.kind;
-  const canPushdown = activeKind ? PUSHDOWN_KINDS.has(activeKind) : false;
+  // Multi-stage queries (nested-query source) run LOCAL only — the pushdown
+  // endpoint rewrites `source` to a physical table, flattening the nesting.
+  const multiStage = !!compiledIr.ir && isQuerySource(compiledIr.ir.source);
+  // An explore session always runs LOCAL — the promoted result set only exists
+  // inside the browser's DuckDB, so pushdown is never applicable.
+  const canPushdown =
+    !explore && !multiStage && (activeKind ? PUSHDOWN_KINDS.has(activeKind) : false);
   // What "auto" would pick for the current source + IR (defaults local).
   const autoExecution = React.useMemo<ExecutionMode>(
     () => (activeKind && compiledIr.ir ? chooseExecution(activeKind, compiledIr.ir) : "local"),
@@ -329,10 +413,18 @@ export function useQueryWorkspace(
       if (!sql.trim()) return null;
       return { sourceId: activeId, queryKind: "sql", sql, viz };
     }
-    // "ir" — the advanced (and now only) visual builder.
+    // "ir" — the advanced (and now only) visual builder. A non-auto execution
+    // setting rides along so reopening restores the toggle (excluded from
+    // dirty comparison by `toDefinition`).
     if (!compiledIr.ir) return null;
-    return { sourceId: activeId, queryKind: "ir", ir: compiledIr.ir, viz };
-  }, [activeId, mode, compiledIr.ir, sql, viz]);
+    return {
+      sourceId: activeId,
+      queryKind: "ir",
+      ir: compiledIr.ir,
+      execution: executionMode === "auto" ? undefined : executionMode,
+      viz,
+    };
+  }, [activeId, mode, compiledIr.ir, sql, viz, executionMode]);
 
   const dirty = React.useMemo(() => {
     if (!open) return false;
@@ -341,7 +433,9 @@ export function useQueryWorkspace(
     return !sameDefinition(liveDefinition, open);
   }, [open, liveDefinition]);
 
-  const canSave = liveDefinition !== null;
+  // A definition built over an explore session's promoted table would break on
+  // reopen (the table is transient) — saving waits until you're back on a source.
+  const canSave = liveDefinition !== null && explore === null;
 
   const runBuilder = React.useCallback(
     (query: Query) => {
@@ -351,8 +445,9 @@ export function useQueryWorkspace(
     [activeId, viz, recordRun],
   );
   const runSql = React.useCallback(
-    (statement: string) => {
-      setRequest({ kind: "sql", sql: statement });
+    (statement: string, opts?: { maxRows?: number }) => {
+      // History records the raw statement; the cap only shapes this run.
+      setRequest({ kind: "sql", sql: statement, maxRows: opts?.maxRows });
       if (activeId) recordRun({ sourceId: activeId, queryKind: "sql", sql: statement, viz });
     },
     [activeId, viz, recordRun],
@@ -364,43 +459,99 @@ export function useQueryWorkspace(
   //   • LOCAL    → compile to self-contained (inlined) SQL over the resident table.
   const requestForIr = React.useCallback(
     (ir: QueryIR): ResultRequest => {
+      if (explore) {
+        return {
+          kind: "sql",
+          sql: localIrSql(ir, tableName),
+          datasetId: EXPLORE_DATASET,
+        };
+      }
       if (resolvedExecution === "pushdown" && activeId) {
         return { kind: "pushdown", sourceId: activeId, ir, datasetId: PUSHDOWN_DATASET };
       }
-      return { kind: "sql", sql: localIrSql(ir, fields, engine.tableName) };
+      return { kind: "sql", sql: localIrSql(ir, engine.tableName) };
     },
-    [resolvedExecution, activeId, fields, engine.tableName],
+    [explore, tableName, resolvedExecution, activeId, engine.tableName],
   );
 
   // Advanced (IR) run — the primary builder. Records the run as an `ir` entry so
-  // it re-opens in the builder (not SQL); executes via `requestForIr`.
+  // it re-opens in the builder (not SQL); executes via `requestForIr`. While the
+  // user hasn't chosen a chart type, a suggestion derived from the draft's shape
+  // is applied (Metabase-style auto-viz).
   const runIr = React.useCallback(() => {
     if (!compiledIr.ir || !activeId) return;
-    recordRun({ sourceId: activeId, queryKind: "ir", ir: compiledIr.ir, viz });
+    let effectiveViz = viz;
+    if (!vizTouched.current) {
+      const suggested = suggestVizType(irDraft, fields);
+      if (suggested !== viz.type) {
+        effectiveViz = { ...viz, type: suggested };
+        setViz(effectiveViz);
+      }
+    }
+    // Explore runs aren't recorded: their IR points at a transient promoted
+    // table that won't exist when a history entry tries to re-run it.
+    if (!explore) {
+      recordRun({ sourceId: activeId, queryKind: "ir", ir: compiledIr.ir, viz: effectiveViz });
+    }
     setRequest(requestForIr(compiledIr.ir));
-  }, [compiledIr.ir, activeId, viz, recordRun, requestForIr]);
+  }, [compiledIr.ir, activeId, viz, irDraft, fields, explore, recordRun, requestForIr]);
+
+  // Drill-through entry point: swap the draft and run in one step. The viz is
+  // re-suggested when the query SHAPE flips (aggregated ⇄ raw listing) even if
+  // the user picked a type — a bar chart of raw drill-down rows is nonsense.
+  const applyDraftAndRun = React.useCallback(
+    (next: IrDraft) => {
+      setIrDraft(next);
+      if (!activeId) return;
+      const compiled = compileIrDraft(next, fields, tableName);
+      if (!compiled.ir) return;
+      const wasAggregated = irDraft.dimensions.length > 0 || irDraft.metrics.length > 0;
+      const isAggregated = next.dimensions.length > 0 || next.metrics.length > 0;
+      let effectiveViz = viz;
+      if (wasAggregated !== isAggregated || !vizTouched.current) {
+        const suggested = suggestVizType(next, fields);
+        if (suggested !== viz.type) {
+          effectiveViz = { ...viz, type: suggested };
+          setViz(effectiveViz);
+        }
+      }
+      if (!explore) {
+        recordRun({ sourceId: activeId, queryKind: "ir", ir: compiled.ir, viz: effectiveViz });
+      }
+      setRequest(requestForIr(compiled.ir));
+    },
+    [activeId, fields, tableName, irDraft, viz, explore, recordRun, requestForIr],
+  );
 
   // ── Open flow ───────────────────────────────────────────────────────────────
   const openSavedQuery = React.useCallback(
     async (target: SavedQuery | SavedQuerySummary) => {
       setOpeningId(target.id);
       setSaveError(null);
+      // Any explore session ends — the saved query re-binds to its own source.
+      evictDataset(EXPLORE_DATASET);
+      setExplore(null);
       try {
         // Always fetch the full record (a summary carries no query/sql payload).
         const sq = "viz" in target ? (target as SavedQuery) : await store.get(target.id);
         if (!sq) throw new Error("Saved query no longer exists.");
 
-        // Restore the editor in the STORED mode + viz (builder/ir → the advanced
-        // builder; sql → the SQL editor).
+        // Restore the editor in the STORED mode + viz + execution setting
+        // (builder/ir → the advanced builder; sql → the SQL editor).
         setMode(toWorkspaceMode(sq.queryKind));
         setViz(sq.viz);
-        // Field schema for the target source (cached) — hydrates the builder.
-        const targetFields = await sources.getFields(sq.sourceId);
+        vizTouched.current = true; // stored viz is deliberate
+        setExecutionMode(sq.execution ?? "auto");
+        // Warm the target source's field cache (hydrates the builder on activate).
+        await sources.getFields(sq.sourceId);
         // A legacy "builder" record carries `ir` via the store's migrateOnRead;
         // an "ir" record carries it directly. Both hydrate the advanced builder.
         const ir = sq.queryKind !== "sql" ? sq.ir : undefined;
         if (ir) {
-          setIrDraft(irToDraft(ir));
+          // Anything the builder can't express is reported, not silently lost.
+          const warnings: string[] = [];
+          setIrDraft(irToDraft(ir, warnings));
+          if (warnings.length > 0) setSaveError(`Note: ${warnings.join(" ")}`);
           setSql("");
         } else {
           setSql(sq.sql ?? "");
@@ -416,9 +567,20 @@ export function useQueryWorkspace(
         // 1. ensureResident: the single-source panel loads under DATASET_TABLE.
         await sources.activate(sq.sourceId);
 
-        // 3. Execute through the existing results pipeline (IR runs LOCAL on open).
+        // 3. Execute through the existing results pipeline, honoring the stored
+        // execution setting (resolved against the source's actual capability —
+        // the toggle's floor logic, replicated here because state set above
+        // hasn't propagated to `resolvedExecution` yet).
         if (ir) {
-          setRequest({ kind: "sql", sql: localIrSql(ir, targetFields, engine.tableName) });
+          const kind = sources.sources.find((s) => s.id === sq.sourceId)?.kind;
+          const setting = sq.execution ?? "auto";
+          const resolved = setting === "auto" && kind ? chooseExecution(kind, ir) : setting;
+          const pushdown = resolved === "pushdown" && kind && PUSHDOWN_KINDS.has(kind);
+          setRequest(
+            pushdown
+              ? { kind: "pushdown", sourceId: sq.sourceId, ir, datasetId: PUSHDOWN_DATASET }
+              : { kind: "sql", sql: localIrSql(ir, engine.tableName) },
+          );
           recordRun({ sourceId: sq.sourceId, queryKind: "ir", ir, viz: sq.viz });
         } else if (sq.sql?.trim()) {
           setRequest({ kind: "sql", sql: sq.sql });
@@ -432,12 +594,16 @@ export function useQueryWorkspace(
         setOpeningId(null);
       }
     },
-    [store, sources, recordRun, engine.tableName],
+    [store, sources, recordRun, engine.tableName, evictDataset],
   );
 
   // ── Persist (create / update) ───────────────────────────────────────────────
   const persist = React.useCallback(
     async (input: SaveInput, intent: "save" | "saveAs"): Promise<SavedQuery | null> => {
+      if (explore) {
+        setSaveError("Saving isn't available while exploring SQL results.");
+        return null;
+      }
       if (!liveDefinition) {
         setSaveError("Finish the query before saving.");
         return null;
@@ -448,6 +614,7 @@ export function useQueryWorkspace(
         // Honor the viz chosen in the dialog for the persisted record + editor.
         const def: QueryDefinition = { ...liveDefinition, viz: input.viz };
         setViz(input.viz);
+        vizTouched.current = true;
 
         let saved: SavedQuery;
         if (intent === "save" && open) {
@@ -469,7 +636,7 @@ export function useQueryWorkspace(
         setSaving(false);
       }
     },
-    [liveDefinition, open, store, refreshList],
+    [explore, liveDefinition, open, store, refreshList],
   );
 
   const renameSaved = React.useCallback(
@@ -516,10 +683,13 @@ export function useQueryWorkspace(
   const openHistoryEntry = React.useCallback(
     async (entry: HistoryEntry) => {
       setSaveError(null);
+      evictDataset(EXPLORE_DATASET);
+      setExplore(null);
       try {
         setMode(toWorkspaceMode(entry.queryKind));
         setViz(entry.viz);
-        const targetFields = await sources.getFields(entry.sourceId);
+        vizTouched.current = true;
+        await sources.getFields(entry.sourceId);
         // "ir" entries carry `ir`; legacy "builder" entries carry a v1 `query`
         // that we migrate on the fly — both open in the advanced builder.
         const ir =
@@ -529,7 +699,9 @@ export function useQueryWorkspace(
               ? queryV1ToIR(entry.query, engine.tableName)
               : undefined;
         if (ir) {
-          setIrDraft(irToDraft(ir));
+          const warnings: string[] = [];
+          setIrDraft(irToDraft(ir, warnings));
+          if (warnings.length > 0) setSaveError(`Note: ${warnings.join(" ")}`);
           setSql("");
         } else {
           setSql(entry.sql ?? "");
@@ -542,7 +714,7 @@ export function useQueryWorkspace(
         await sources.activate(entry.sourceId);
 
         if (ir) {
-          setRequest({ kind: "sql", sql: localIrSql(ir, targetFields, engine.tableName) });
+          setRequest({ kind: "sql", sql: localIrSql(ir, engine.tableName) });
           recordRun({ sourceId: entry.sourceId, queryKind: "ir", ir, viz: entry.viz });
         } else if (entry.sql?.trim()) {
           setRequest({ kind: "sql", sql: entry.sql });
@@ -552,7 +724,7 @@ export function useQueryWorkspace(
         setSaveError(err instanceof Error ? err.message : "Failed to re-run this query.");
       }
     },
-    [sources, recordRun, engine.tableName],
+    [sources, recordRun, engine.tableName, evictDataset],
   );
 
   const removeHistoryEntry = React.useCallback(
@@ -579,22 +751,85 @@ export function useQueryWorkspace(
   );
 
   const newQuery = React.useCallback(() => {
+    evictDataset(EXPLORE_DATASET);
+    setExplore(null);
     setOpen(null);
     setMode("ir");
-    setDraft(emptyDraft(fields));
-    setIrDraft(emptyIrDraft(fields));
-    setSql(sampleSql(fields, engine.tableName));
+    // Always reset to the SOURCE's fields — never a lingering explore schema.
+    setDraft(emptyDraft(sourceFields));
+    setIrDraft(emptyIrDraft(sourceFields));
+    setSql(sampleSql(sourceFields, engine.tableName));
     setViz({ type: "bar" });
+    vizTouched.current = false; // fresh query → auto-viz resumes
     setRequest(null);
     setSaveError(null);
-  }, [fields, engine.tableName]);
+  }, [sourceFields, engine.tableName, evictDataset]);
+
+  // ── Explore results ("GUI on SQL") ─────────────────────────────────────────
+  const exploreResults = React.useCallback(async () => {
+    if (!request || request.kind !== "sql" || request.datasetId) return;
+    setSaveError(null);
+    try {
+      // Explore what the user SAW: honor the page's row cap, like its display.
+      const body = request.sql.trim().replace(/;\s*$/, "");
+      const capped = request.maxRows
+        ? `SELECT * FROM (\n${body}\n) AS _q LIMIT ${request.maxRows}`
+        : request.sql;
+      const res = await promoteSqlResult(engine.tableName, capped, EXPLORE_DATASET);
+      const exploreFields = fieldsFromSqlColumns(res.columns);
+      setExplore({ sql: request.sql, fields: exploreFields, rowCount: res.rowCount });
+      setMode("ir");
+      setOpen(null);
+      setIrDraft(emptyIrDraft(exploreFields));
+      setViz({ type: "table" });
+      vizTouched.current = false; // shape-driven suggestions resume
+      setRequest({
+        kind: "sql",
+        sql: `SELECT * FROM "${tableNameFor(EXPLORE_DATASET)}"`,
+        datasetId: EXPLORE_DATASET,
+      });
+    } catch (err) {
+      const message =
+        err instanceof Error
+          ? err.message
+          : ((err as { message?: string })?.message ?? "Failed to explore results.");
+      setSaveError(message);
+    }
+  }, [request, engine.tableName, promoteSqlResult]);
+
+  const exitExplore = React.useCallback(() => {
+    if (!explore) return;
+    const sql = explore.sql;
+    evictDataset(EXPLORE_DATASET);
+    setExplore(null);
+    setMode("sql");
+    setIrDraft(emptyIrDraft(sourceFields));
+    setSql(sql);
+    setRequest({ kind: "sql", sql });
+  }, [explore, sourceFields, evictDataset]);
+
+  // ── Convert to SQL (one-way, Metabase-style) ───────────────────────────────
+  const convertToSql = React.useCallback((): string | null => {
+    if (!compiledIr.ir) return null;
+    const raw = localIrSql(compiledIr.ir, tableName);
+    let pretty = raw;
+    try {
+      pretty = formatSql(raw, { language: "duckdb", keywordCase: "upper" });
+    } catch {
+      // The formatter is cosmetic — fall back to the compiler's output.
+    }
+    setMode("sql");
+    setSql(pretty);
+    setOpen(null); // a converted query is a new scratch query
+    return pretty;
+  }, [compiledIr.ir, tableName]);
 
   const defaultResultView: "chart" | "table" = viz.type === "table" ? "table" : "chart";
 
   return {
     fields,
-    datasetName: sources.activeSource?.name ?? "No source",
-    tableName: engine.tableName,
+    datasetName: explore ? "SQL results" : (sources.activeSource?.name ?? "No source"),
+    tableName,
     mode,
     setMode,
     draft,
@@ -605,7 +840,7 @@ export function useQueryWorkspace(
     sql,
     setSql,
     viz,
-    setViz,
+    setViz: setVizUser,
     running: engine.loading,
     queryToSql: engine.queryToSql,
     sqlToQuery: engine.sqlToQuery,
@@ -613,6 +848,12 @@ export function useQueryWorkspace(
     runBuilder,
     runSql,
     runIr,
+    applyDraftAndRun,
+    cancel: cancelSql,
+    exploreResults,
+    explore,
+    exitExplore,
+    convertToSql,
     executionMode,
     setExecutionMode,
     resolvedExecution,

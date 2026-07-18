@@ -16,7 +16,7 @@
  */
 
 import { describe, expect, it, vi } from "vitest";
-import { Scheduler, type SourceResolver } from "./useQueryScheduler";
+import { Scheduler, type SchedulerConfig, type SourceResolver } from "./useQueryScheduler";
 import type { AnalyticsEngine } from "./useAnalyticsEngine";
 import type { Widget } from "@/lib/types/dashboard";
 import { widgetCacheKey } from "@/lib/dashboard/hash";
@@ -75,8 +75,8 @@ function makeEngine() {
 
 const resolver: SourceResolver = () => ({ kind: "rows", rows: [] });
 
-function makeScheduler(engine: AnalyticsEngine) {
-  return new Scheduler({ current: engine }, { current: resolver });
+function makeScheduler(engine: AnalyticsEngine, config?: SchedulerConfig) {
+  return new Scheduler({ current: engine }, { current: resolver }, config);
 }
 
 /** Drain the microtask/macrotask queues so the async runner settles. */
@@ -228,6 +228,56 @@ describe("Property 3 — result cache hits + force bypass", () => {
     await flush();
 
     expect(counts.runSql).toBe(1);
+  });
+});
+
+// ── 3b. Cache is bounded: LRU eviction + TTL expiry ─────────────────────────
+
+describe("Property 3b — bounded cache (LRU + TTL)", () => {
+  it("evicts the least-recently-used entry beyond the size cap", async () => {
+    const { engine, counts } = makeEngine();
+    const s = makeScheduler(engine, { cacheMax: 2 });
+
+    const wA = builder("demo", countBy("region"));
+    const wB = builder("demo", countBy("category"));
+    const wC = builder("demo", countBy("channel"));
+
+    s.submit(wA);
+    s.submit(wB);
+    s.submit(wC); // cache now holds {B, C}; A (oldest) is evicted
+    await flush();
+    expect(counts.runQuery).toBe(3);
+
+    // A was evicted → re-running it hits the engine again.
+    s.submit(wA);
+    await flush();
+    expect(counts.runQuery).toBe(4);
+
+    // C is still resident (most-recent) → served from cache, no new call.
+    s.submit(wC);
+    await flush();
+    expect(counts.runQuery).toBe(4);
+  });
+
+  it("re-runs an entry once its TTL has elapsed", async () => {
+    const clock = { t: 0 };
+    const { engine, counts } = makeEngine();
+    const s = makeScheduler(engine, { cacheTtlMs: 1000, now: () => clock.t });
+
+    const w = builder("demo", countBy("region"));
+    s.submit(w);
+    await flush();
+    expect(counts.runQuery).toBe(1);
+
+    clock.t = 500; // still fresh
+    s.submit(w);
+    await flush();
+    expect(counts.runQuery).toBe(1);
+
+    clock.t = 2000; // past the 1000ms TTL → stale → re-run
+    s.submit(w);
+    await flush();
+    expect(counts.runQuery).toBe(2);
   });
 });
 

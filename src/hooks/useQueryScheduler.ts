@@ -47,6 +47,20 @@ import {
 /** How many rows a SQL/table widget pulls per query (the visible page). */
 const WIDGET_SQL_PAGE = 200;
 
+/** Result-cache bounds: at most N entries (LRU), each valid for T ms. */
+const DEFAULT_CACHE_MAX = 100;
+const DEFAULT_CACHE_TTL_MS = 5 * 60 * 1000;
+
+/** Scheduler tunables (all optional; `now` is injectable for deterministic tests). */
+export interface SchedulerConfig {
+  /** Max cached results before the least-recently-used is evicted. */
+  cacheMax?: number;
+  /** How long a cached result stays fresh, in ms. */
+  cacheTtlMs?: number;
+  /** Clock source (defaults to Date.now). */
+  now?: () => number;
+}
+
 export type WidgetResultStatus =
   | "idle"
   | "loading"
@@ -86,6 +100,8 @@ interface Cached {
   payload: ChartPayload | null;
   elapsedMs?: number;
   empty: boolean;
+  /** When this entry was stored (ms) — drives TTL expiry. */
+  at: number;
 }
 
 type Residency =
@@ -120,10 +136,45 @@ export class Scheduler {
   /** Builder source drained most recently — keep pulling its tasks first. */
   private lastBuilderSource: string | null = null;
 
+  private cacheMax: number;
+  private cacheTtlMs: number;
+  private now: () => number;
+
   constructor(
     private engineRef: React.MutableRefObject<AnalyticsEngine>,
     private resolverRef: React.MutableRefObject<SourceResolver>,
-  ) {}
+    config: SchedulerConfig = {},
+  ) {
+    this.cacheMax = config.cacheMax ?? DEFAULT_CACHE_MAX;
+    this.cacheTtlMs = config.cacheTtlMs ?? DEFAULT_CACHE_TTL_MS;
+    this.now = config.now ?? Date.now;
+  }
+
+  // ── Result cache (bounded: LRU eviction + TTL freshness) ──────────────────
+  /** Read a still-fresh entry, refreshing its LRU recency; expired → dropped. */
+  private cacheGet(key: string): Cached | undefined {
+    const hit = this.cache.get(key);
+    if (!hit) return undefined;
+    if (this.now() - hit.at > this.cacheTtlMs) {
+      this.cache.delete(key);
+      return undefined;
+    }
+    // Move to the most-recent end (Map preserves insertion order).
+    this.cache.delete(key);
+    this.cache.set(key, hit);
+    return hit;
+  }
+
+  /** Store an entry (stamped now), evicting the oldest beyond the size cap. */
+  private cachePut(key: string, cached: Omit<Cached, "at">) {
+    this.cache.delete(key);
+    this.cache.set(key, { ...cached, at: this.now() });
+    while (this.cache.size > this.cacheMax) {
+      const oldest = this.cache.keys().next().value as string | undefined;
+      if (oldest === undefined) break;
+      this.cache.delete(oldest);
+    }
+  }
 
   // ── Subscription (per-widget, for useSyncExternalStore) ───────────────────
   subscribe = (widgetId: string, cb: () => void): (() => void) => {
@@ -151,7 +202,7 @@ export class Scheduler {
 
     // Fast path: a cached result and no force → serve instantly, no queue.
     if (!force) {
-      const hit = this.cache.get(cacheKey);
+      const hit = this.cacheGet(cacheKey);
       if (hit) {
         this.set(widget.id, {
           status: hit.empty ? "empty" : "data",
@@ -259,7 +310,7 @@ export class Scheduler {
 
       // A cache entry may have appeared (a duplicate widget ran first).
       if (!force) {
-        const hit = this.cache.get(cacheKey);
+        const hit = this.cacheGet(cacheKey);
         if (hit) {
           this.set(widget.id, {
             status: hit.empty ? "empty" : "data",
@@ -272,7 +323,7 @@ export class Scheduler {
         }
       }
 
-      let cached: Cached;
+      let cached: Omit<Cached, "at">;
       if (widget.queryKind === "builder") {
         this.lastBuilderSource = widget.sourceId;
         const { payload, elapsedMs } = await this.engineRef.current.runQueryOn(
@@ -314,7 +365,7 @@ export class Scheduler {
         };
       }
 
-      this.cache.set(cacheKey, cached);
+      this.cachePut(cacheKey, cached);
       this.set(widget.id, {
         status: cached.empty ? "empty" : "data",
         table: cached.table,
@@ -357,6 +408,7 @@ export interface QueryScheduler {
 export function useQueryScheduler(
   engine: AnalyticsEngine,
   resolveSource: SourceResolver,
+  config?: SchedulerConfig,
 ): QueryScheduler {
   // Keep live refs so the stable controller always reads current deps.
   const engineRef = React.useRef(engine);
@@ -367,7 +419,7 @@ export function useQueryScheduler(
   resolverRef.current = resolveSource;
 
   // Lazily create the Scheduler once; useState's initializer keeps it stable.
-  const [s] = React.useState(() => new Scheduler(engineRef, resolverRef));
+  const [s] = React.useState(() => new Scheduler(engineRef, resolverRef, config));
 
   return React.useMemo<QueryScheduler>(
     () => ({

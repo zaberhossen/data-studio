@@ -14,6 +14,7 @@ import type {
   CanvasConfig,
   CanvasElement,
   CanvasLayout,
+  DashboardTab,
   LayoutMode,
   WidgetLayout,
 } from "@/lib/types/dashboard";
@@ -33,6 +34,8 @@ export interface PublicWidget {
   layout: WidgetLayout;
   canvasLayout?: CanvasLayout;
   kind?: "query";
+  /** Page-view tab membership (safe to expose — no data). */
+  tabId?: string;
 }
 
 /** A dashboard stripped to its renderable shell (no sources, no definitions). */
@@ -43,6 +46,8 @@ export interface PublicDashboard {
   widgets: PublicWidget[];
   /** Decoration elements are safe to expose (they hold no data). */
   elements?: CanvasElement[];
+  /** Page-view tabs (grid mode). */
+  tabs?: DashboardTab[];
 }
 
 /**

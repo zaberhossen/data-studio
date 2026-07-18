@@ -7,7 +7,7 @@
 import { NextResponse } from "next/server";
 import { resolveAuth } from "@/lib/auth/api";
 import { getShareLinkStore } from "@/lib/server/share-store";
-import { errorResponse } from "@/lib/server/api-helpers";
+import { errorResponse, mutationRateLimit } from "@/lib/server/api-helpers";
 import { clientIp, logAudit } from "@/lib/server/audit";
 
 export const runtime = "nodejs";
@@ -17,6 +17,8 @@ export async function DELETE(_req: Request, { params }: { params: Promise<{ id: 
   const { id } = await params;
   const auth = await resolveAuth();
   if ("error" in auth) return auth.error;
+  const limited = mutationRateLimit(auth.ctx);
+  if (limited) return limited;
   try {
     const ok = await getShareLinkStore().revoke(auth.ctx, id);
     if (!ok) return NextResponse.json({ error: "Share link not found." }, { status: 404 });

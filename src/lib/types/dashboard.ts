@@ -44,6 +44,16 @@ export interface CanvasLayout {
   zIndex?: number;
   /** Rotation in degrees (clockwise). */
   rotation?: number;
+  /**
+   * Persisted group membership: items sharing a `groupId` select and move as one
+   * (Figma-style groups). Minted by "Group" (⌘G); cleared by "Ungroup" (⌘⇧G).
+   * Frames are never grouped.
+   */
+  groupId?: string;
+  /** Layers panel: excluded from marquee/drag/resize (still selectable there). */
+  locked?: boolean;
+  /** Layers panel: not rendered on the stage (a query widget also won't run). */
+  hidden?: boolean;
 }
 
 /** Non-query decoration elements live alongside query widgets on the canvas. */
@@ -59,6 +69,8 @@ export interface TextContent {
   italic?: boolean;
   /** CSS color (an ink token by default). */
   color?: string;
+  /** Render `text` as Markdown (headings/lists/links/bold/italic/code). */
+  markdown?: boolean;
 }
 
 /** Image element (URL-referenced; arrives in Pass B). */
@@ -74,13 +86,29 @@ export interface ShapeContent {
   shape: "rect" | "ellipse";
   fill?: string;
   stroke?: string;
+  /** Stroke width in px (default 2 when a stroke color is set). */
+  strokeWidth?: number;
+  /** Corner radius in px (rectangles only). */
+  radius?: number;
+  /** Fill/stroke opacity, 0–1 (default 1). */
+  opacity?: number;
+  /** Drop shadow. */
+  shadow?: boolean;
 }
+
+/** Line dash style. */
+export type LineDash = "solid" | "dashed" | "dotted";
 
 /** Straight line / divider element (Pass B). */
 export interface LineContent {
   kind: "line";
   stroke?: string;
   strokeWidth?: number;
+  /** Dash pattern (default solid). */
+  dash?: LineDash;
+  /** Arrowhead at the start / end of the line. */
+  startArrow?: boolean;
+  endArrow?: boolean;
 }
 
 export type ElementContent = TextContent | ImageContent | ShapeContent | LineContent;
@@ -94,8 +122,28 @@ export interface CanvasElement {
   id: string;
   kind: Exclude<WidgetKind, "query">;
   canvasLayout: CanvasLayout;
+  /** Which Page-view tab this element lives on (undefined → the first tab). */
+  tabId?: string;
+  /**
+   * Grid placement — present when the element also lives on the PAGE (grid)
+   * layout. Only text cards render in grid mode (Metabase-style text/heading
+   * cards); other kinds stay canvas-only. Coexists with `canvasLayout` so the
+   * Page ⇄ Canvas convert is lossless, mirroring `Widget.layout`.
+   */
+  layout?: WidgetLayout;
   content: ElementContent;
 }
+
+/**
+ * What clicking a chart datum / table cell on this widget does. Omitted ⇒
+ * `cross-filter` (the default drill interaction). `url` templates `{{value}}`
+ * and `{{column}}` from the clicked point; `dashboard` navigates to another
+ * dashboard, optionally seeding one of its filters with the clicked value.
+ */
+export type WidgetClickAction =
+  | { type: "cross-filter" }
+  | { type: "url"; url: string; newTab?: boolean }
+  | { type: "dashboard"; dashboardId: string; filterId?: string };
 
 export interface Widget extends QueryDefinition {
   id: string;
@@ -105,6 +153,10 @@ export interface Widget extends QueryDefinition {
   canvasLayout?: CanvasLayout;
   /** Always a query widget here; the field is explicit for the persisted row. */
   kind?: "query";
+  /** Which Page-view tab this widget lives on (undefined → the first tab). */
+  tabId?: string;
+  /** Click-through behavior for a data point (default: cross-filter). */
+  clickBehavior?: WidgetClickAction;
 }
 
 // ── Filter model ─────────────────────────────────────────────────────────────
@@ -165,6 +217,17 @@ export interface DashboardFilter {
   op?: FilterOperator;
   /** Optional default value shown before user interaction. */
   default?: FilterValue;
+  /**
+   * Must hold a value: the filter bar won't let it be cleared and flags it when
+   * empty. (A `default` is the usual companion so it's never empty on load.)
+   */
+  required?: boolean;
+  /**
+   * Author-fixed: the value is pinned to `default` and can't be changed in the
+   * filter bar (read-only), nor overridden via the URL. Useful for scoping a
+   * shared/embedded dashboard.
+   */
+  locked?: boolean;
 }
 
 /**
@@ -187,19 +250,67 @@ export interface CrossFilter {
 
 // ── Dashboard ─────────────────────────────────────────────────────────────────
 
+/**
+ * A named artboard on the free-form canvas (Figma-style "frame"). Frames are
+ * presentation pages: a bordered region with its own background that items sit
+ * on. Membership is DERIVED by geometry (an item whose center lies inside the
+ * frame moves with it) — nothing references a frame id, so dragging an item
+ * out of a frame needs no bookkeeping.
+ */
+export interface CanvasFrame {
+  id: string;
+  name: string;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  /** CSS color; defaults to the card surface. */
+  background?: string;
+  /** Layers panel: excluded from marquee/drag/resize. */
+  locked?: boolean;
+  /** Layers panel: not rendered on the stage. */
+  hidden?: boolean;
+}
+
 /** The free-form canvas surface geometry (logical px). */
 export interface CanvasConfig {
   width: number;
   height: number;
   background?: string;
+  /** Artboards (canvas dashboards only). Lives inside the `canvas` jsonb. */
+  frames?: CanvasFrame[];
+  /** Alignment-grid spacing in logical px (default `DEFAULT_GRID_SIZE`). */
+  gridSize?: number;
+  /** Paint the alignment grid overlay on the stage (edit mode only). */
+  showGrid?: boolean;
+  /** Snap drag/resize to the alignment grid. */
+  snapToGrid?: boolean;
+  /** Show measurement rulers along the viewport's top/left edges (edit mode). */
+  showRulers?: boolean;
 }
 
+/** Default alignment-grid spacing (px) when a canvas enables the grid. */
+export const DEFAULT_GRID_SIZE = 8;
+
 export const DEFAULT_CANVAS: CanvasConfig = { width: 1200, height: 800 };
+
+/**
+ * A Page-view tab (Metabase-style). Tabs partition a grid dashboard into
+ * separate pages; a widget/element's `tabId` places it on one. When a dashboard
+ * has no tabs it's a single implicit page (the common case). Canvas mode ignores
+ * tabs — it's one free-form surface.
+ */
+export interface DashboardTab {
+  id: string;
+  name: string;
+}
 
 export interface Dashboard {
   id: string;
   name: string;
   widgets: Widget[];
+  /** Page-view tabs. Absent/empty → a single untabbed page. */
+  tabs?: DashboardTab[];
   /** Non-query canvas decorations (text/image/shape/line). Canvas mode only. */
   elements?: CanvasElement[];
   /** Grid (default) or free-form canvas. */
@@ -209,8 +320,26 @@ export interface Dashboard {
   /** Filter DEFINITIONS (persisted). Active values live in ActiveFilters. */
   filters?: DashboardFilter[];
   updatedAt?: number;
+  /**
+   * Optimistic-lock counter (server-assigned). The client echoes it on save; the
+   * server rejects the write (409) if the stored version has advanced meanwhile.
+   */
+  version?: number;
 }
 
-export function emptyDashboard(id: string, name = "Untitled dashboard"): Dashboard {
-  return { id, name, widgets: [], elements: [], filters: [], layoutMode: "grid" };
+export function emptyDashboard(
+  id: string,
+  name = "Untitled dashboard",
+  layoutMode: LayoutMode = "grid",
+): Dashboard {
+  return {
+    id,
+    name,
+    widgets: [],
+    elements: [],
+    filters: [],
+    layoutMode,
+    // A canvas ("free-form") dashboard needs its surface geometry from birth.
+    ...(layoutMode === "canvas" ? { canvas: DEFAULT_CANVAS } : {}),
+  };
 }

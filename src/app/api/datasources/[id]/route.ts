@@ -9,6 +9,7 @@ import { getStore } from "@/lib/server/datasource-store";
 import { disposeConnector } from "@/lib/server/connectors";
 import { resolveAuth } from "@/lib/auth/api";
 import { assertCanWrite } from "@/lib/db/scope";
+import { mutationRateLimit } from "@/lib/server/api-helpers";
 import type { CreateDataSourceInput } from "@/lib/types/datasource";
 
 export const runtime = "nodejs";
@@ -18,6 +19,8 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
   const { id } = await params;
   const auth = await resolveAuth();
   if ("error" in auth) return auth.error;
+  const limited = mutationRateLimit(auth.ctx);
+  if (limited) return limited;
   try {
     assertCanWrite(auth.ctx);
   } catch {
@@ -51,6 +54,8 @@ export async function DELETE(
   const { id } = await params;
   const auth = await resolveAuth();
   if ("error" in auth) return auth.error;
+  const limited = mutationRateLimit(auth.ctx);
+  if (limited) return limited;
 
   try {
     assertCanWrite(auth.ctx);

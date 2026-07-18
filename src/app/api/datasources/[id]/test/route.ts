@@ -10,6 +10,7 @@ import type { ConnectionTestResult } from "@/lib/types/datasource";
 import { getStore } from "@/lib/server/datasource-store";
 import { ConnectorError, connectorFor } from "@/lib/server/connectors";
 import { resolveAuth } from "@/lib/auth/api";
+import { mutationRateLimit } from "@/lib/server/api-helpers";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -21,6 +22,8 @@ export async function POST(
   const { id } = await params;
   const auth = await resolveAuth();
   if ("error" in auth) return auth.error;
+  const limited = mutationRateLimit(auth.ctx);
+  if (limited) return limited;
   const { ctx } = auth;
 
   const record = await getStore().get(ctx, id);

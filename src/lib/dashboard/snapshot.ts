@@ -21,6 +21,7 @@ export function projectPublicDashboard(d: Dashboard): PublicDashboard {
     name: d.name,
     layoutMode: d.layoutMode,
     canvas: d.canvas,
+    tabs: d.tabs,
     widgets: d.widgets.map((w) => ({
       id: w.id,
       title: w.title,
@@ -29,6 +30,7 @@ export function projectPublicDashboard(d: Dashboard): PublicDashboard {
       layout: w.layout,
       canvasLayout: w.canvasLayout,
       kind: "query" as const,
+      tabId: w.tabId,
     })),
     elements: d.elements,
   };
@@ -83,6 +85,10 @@ export async function buildSnapshot(
   timeoutMs = 12_000,
 ): Promise<DashboardSnapshot> {
   const ids = dashboard.widgets.map((w) => w.id);
+  // Viewport-lazy loading + Page-view tabs mean off-screen / off-tab widgets may
+  // never have submitted. Kick every widget so the snapshot captures them all
+  // (submit is cache-aware — already-computed widgets resolve instantly).
+  for (const w of dashboard.widgets) scheduler.submit(w);
   await waitForResults(scheduler, ids, timeoutMs);
 
   const results: DashboardSnapshot["results"] = {};

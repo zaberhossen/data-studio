@@ -1,6 +1,9 @@
 "use client";
 
-// Standard shadcn/ui Tabs primitive (Radix-based).
+// Tabs primitive (Radix-based) — Supabase Studio underline style: transparent
+// list with a 1px bottom border; the active trigger overlaps it with a 2px
+// foreground underline (triggers are bottom-aligned with -mb-px for the
+// overlap). No pill fills, no shadows.
 import * as React from "react";
 import * as TabsPrimitive from "@radix-ui/react-tabs";
 import { cn } from "@/lib/utils";
@@ -14,7 +17,7 @@ const TabsList = React.forwardRef<
   <TabsPrimitive.List
     ref={ref}
     className={cn(
-      "inline-flex h-8 items-center justify-center rounded-md border border-border bg-muted p-0.5 text-muted-foreground",
+      "inline-flex h-9 items-end gap-4 border-b border-border text-muted-foreground",
       className,
     )}
     {...props}
@@ -29,7 +32,7 @@ const TabsTrigger = React.forwardRef<
   <TabsPrimitive.Trigger
     ref={ref}
     className={cn(
-      "inline-flex items-center justify-center gap-1.5 whitespace-nowrap rounded-sm px-3 py-1 text-xs font-medium ring-offset-background transition-all focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50 data-[state=active]:bg-card data-[state=active]:text-foreground data-[state=active]:shadow-sm",
+      "-mb-px inline-flex items-center justify-center gap-1.5 whitespace-nowrap border-b-2 border-transparent px-1 pb-2 pt-1 text-xs font-medium transition-colors hover:text-foreground focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-border disabled:pointer-events-none disabled:opacity-50 data-[state=active]:border-foreground data-[state=active]:text-foreground",
       className,
     )}
     {...props}

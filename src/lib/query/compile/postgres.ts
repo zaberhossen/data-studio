@@ -6,6 +6,7 @@
 
 import type { AggFn, RelativeDate, TemporalUnit } from "@/lib/query/ir";
 import type { Dialect } from "./dialect";
+import { CompileError, percentileFraction } from "./compile";
 
 const INTERVAL_UNIT: Record<RelativeDate["unit"], string> = {
   day: "day",
@@ -44,7 +45,11 @@ export const PostgresDialect: Dialect = {
     }
   },
 
-  aggregate(fn: AggFn, argSql: string | null, distinct: boolean): string {
+  numericBin(width: number, colSql: string): string {
+    return `floor(${colSql} / ${width}) * ${width}`;
+  },
+
+  aggregate(fn: AggFn, argSql: string | null, distinct: boolean, p?: number): string {
     if (fn === "count") {
       if (argSql === null) return "count(*)";
       return distinct ? `count(distinct ${argSql})` : `count(${argSql})`;
@@ -64,6 +69,13 @@ export const PostgresDialect: Dialect = {
         return `percentile_cont(0.5) WITHIN GROUP (ORDER BY ${argSql})`;
       case "stddev":
         return `stddev_samp(${argSql})`;
+      case "variance":
+        return `var_samp(${argSql})`;
+      case "percentile":
+        return `percentile_cont(${percentileFraction(p)}) WITHIN GROUP (ORDER BY ${argSql})`;
+      case "count_if":
+      case "sum_if":
+        throw new CompileError(`"${fn}" is compiled as a conditional aggregate, not here.`);
     }
   },
 

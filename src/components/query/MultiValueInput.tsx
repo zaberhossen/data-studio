@@ -1,12 +1,13 @@
 "use client";
 
 /**
- * MultiValueInput — chip-style entry for the `in_list` operator.
+ * MultiValueInput — chip-style entry for multi-value filter operators
+ * (`in` / `not_in` in the advanced builder).
  *
  * Type a value then Enter or comma to commit it as a chip; Backspace on an
  * empty field removes the last chip; each chip has its own remove button.
- * Values are plain strings here — `compileQuery` coerces them to the column's
- * Cell type and validates.
+ * Values are plain strings here — the IR compiler binds them as params and
+ * validates against the column's type.
  *
  * shadcn primitives: Input, Badge (chip), Button (chip remove via icon).
  * States: empty (placeholder), with chips, focused.

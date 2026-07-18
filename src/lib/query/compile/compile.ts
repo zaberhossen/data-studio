@@ -11,7 +11,9 @@
  *      Expression literals are inlined with strict escaping (so a calculated
  *      field reused in SELECT + GROUP BY doesn't desync the positional params).
  *
- * Joins and window functions are parsed into the IR but not yet compiled (M10).
+ * Joins compile with table/column allowlist validation (`CompileOptions.
+ * allowedTables`); window functions compile as an outer SELECT wrapper over
+ * the aggregated base query.
  */
 
 import type {
@@ -23,7 +25,7 @@ import type {
   QueryIR,
   WindowSpec,
 } from "@/lib/query/ir";
-import { isAggregated } from "@/lib/query/ir";
+import { isAggregated, isQuerySource } from "@/lib/query/ir";
 import type { Dialect } from "./dialect";
 
 export type ColumnRole = "dimension" | "metric" | "window" | "raw";
@@ -68,6 +70,17 @@ export class CompileError extends Error {
   }
 }
 
+/**
+ * Validate + return a percentile fraction in (0,1). Inlined into SQL directly
+ * (a finite number, never user text), so dialects can splice it safely.
+ */
+export function percentileFraction(p: number | undefined): number {
+  if (p === undefined || !Number.isFinite(p) || p <= 0 || p >= 1) {
+    throw new CompileError("Percentile requires a fraction strictly between 0 and 1.");
+  }
+  return p;
+}
+
 const SCALAR_SQL: Record<string, string> = {
   eq: "=",
   neq: "<>",
@@ -88,6 +101,14 @@ interface Ctx {
   calc: Map<string, string>;
   /** Aggregation ordinal → its output alias (for order/having references). */
   aggAlias: string[];
+  /** The IR's aggregations (for re-emitting the aggregate expression in HAVING). */
+  aggs: Aggregation[];
+  /**
+   * How an aggregation ref renders: `"alias"` (SELECT/ORDER BY scope) or
+   * `"expr"` (HAVING scope — Postgres forbids SELECT aliases in HAVING, so the
+   * aggregate expression is repeated there; valid in every dialect).
+   */
+  aggMode: "alias" | "expr";
 }
 
 export function compileIR(
@@ -96,7 +117,7 @@ export function compileIR(
   allowedColumns: Set<string>,
   options: CompileOptions = {},
 ): CompiledSql {
-  const ctx: Ctx = {
+  const root: Ctx = {
     dialect,
     allowed: allowedColumns,
     allowedTables: options.allowedTables,
@@ -104,6 +125,26 @@ export function compileIR(
     inline: options.inline === true,
     calc: new Map(),
     aggAlias: [],
+    aggs: [],
+    aggMode: "alias",
+  };
+  const { sql, columns } = compileQuery(ir, root);
+  return { sql, params: root.params, columns };
+}
+
+/**
+ * Compile one query LEVEL. Multi-stage queries recurse through `fromClause`
+ * (a nested-query source), each level getting a fresh ctx that SHARES the
+ * parent's `params` array (so bound params stay in emission order) but resets
+ * the per-level calc/aggregation scope.
+ */
+function compileQuery(ir: QueryIR, parent: Ctx): { sql: string; columns: CompiledColumn[] } {
+  const ctx: Ctx = {
+    ...parent,
+    calc: new Map(),
+    aggAlias: [],
+    aggs: ir.aggregations ?? [],
+    aggMode: "alias",
   };
 
   // 1. Compile calculated fields in order (each may reference earlier ones).
@@ -130,21 +171,42 @@ export function compileIR(
   if (aggregated) {
     dims.forEach((dim) => {
       const alias = dim.alias ?? defaultDimAlias(dim);
-      selectParts.push(`${compileDimension(dim, ctx)} AS ${dialect.quoteIdent(alias)}`);
+      selectParts.push(`${compileDimension(dim, ctx)} AS ${ctx.dialect.quoteIdent(alias)}`);
       columns.push({ name: alias, role: "dimension" });
       outputCols.add(alias);
     });
     aggs.forEach((agg, i) => {
       const alias = ctx.aggAlias[i];
-      selectParts.push(`${compileAggregation(agg, ctx)} AS ${dialect.quoteIdent(alias)}`);
+      selectParts.push(`${compileAggregation(agg, ctx)} AS ${ctx.dialect.quoteIdent(alias)}`);
       columns.push({ name: alias, role: "metric" });
       outputCols.add(alias);
     });
+  } else if (ir.fields && ir.fields.length > 0) {
+    // Explicit raw-mode column selection.
+    for (const ref of ir.fields) {
+      if (ref.kind === "aggregation") {
+        throw new CompileError("`fields` cannot reference an aggregation.");
+      }
+      const name = ref.name;
+      selectParts.push(
+        ref.kind === "column"
+          ? resolveField(ref, ctx)
+          : `${resolveField(ref, ctx)} AS ${ctx.dialect.quoteIdent(name)}`,
+      );
+      columns.push({ name, role: "raw" });
+      outputCols.add(name);
+    }
+    for (const cf of ir.calculated ?? []) {
+      if (outputCols.has(cf.name)) continue; // already selected via `fields`
+      selectParts.push(`${ctx.calc.get(cf.name)} AS ${ctx.dialect.quoteIdent(cf.name)}`);
+      columns.push({ name: cf.name, role: "raw" });
+      outputCols.add(cf.name);
+    }
   } else {
     selectParts.push("*");
     for (const name of ctx.allowed) outputCols.add(name); // SELECT * exposes them
     for (const cf of ir.calculated ?? []) {
-      selectParts.push(`${ctx.calc.get(cf.name)} AS ${dialect.quoteIdent(cf.name)}`);
+      selectParts.push(`${ctx.calc.get(cf.name)} AS ${ctx.dialect.quoteIdent(cf.name)}`);
       columns.push({ name: cf.name, role: "raw" });
       outputCols.add(cf.name);
     }
@@ -162,8 +224,11 @@ export function compileIR(
       ? dims.map((dim) => compileDimension(dim, ctx)).join(", ")
       : null;
 
-  // 7. HAVING.
+  // 7. HAVING — aggregation refs render as the aggregate EXPRESSION here (see
+  //    Ctx.aggMode): Postgres rejects SELECT aliases inside HAVING.
+  ctx.aggMode = "expr";
   const having = ir.having ? compileFilter(ir.having, ctx) : null;
+  ctx.aggMode = "alias";
 
   const wins = ir.windows ?? [];
   const windowed = wins.length > 0;
@@ -174,16 +239,21 @@ export function compileIR(
   wins.forEach((w) => outputCols.add(w.alias));
 
   // 8. ORDER BY — resolves against output columns when windowed (the outer
-  //    query's scope), else against the base fields.
+  //    query's scope). Otherwise output ALIASES win first for aggregated
+  //    queries (every dialect lets ORDER BY reference SELECT aliases, and a
+  //    bucketed dimension's raw column would be invalid under GROUP BY),
+  //    falling back to base-field resolution.
+  const resolveOrder = (ref: FieldRef): string => {
+    if (windowed) return resolveOutput(ref, ctx, outputCols);
+    if (aggregated && ref.kind === "column" && !ref.table && outputCols.has(ref.name)) {
+      return ctx.dialect.quoteIdent(ref.name);
+    }
+    return resolveField(ref, ctx);
+  };
   const orderBy =
     ir.order && ir.order.length > 0
       ? ir.order
-          .map(
-            (o) =>
-              `${windowed ? resolveOutput(o.ref, ctx, outputCols) : resolveField(o.ref, ctx)} ${
-                o.dir === "desc" ? "DESC" : "ASC"
-              }`,
-          )
+          .map((o) => `${resolveOrder(o.ref)} ${o.dir === "desc" ? "DESC" : "ASC"}`)
           .join(", ")
       : null;
 
@@ -196,10 +266,10 @@ export function compileIR(
   let sql: string;
   if (windowed) {
     const winSelect = wins
-      .map((w) => `${compileWindow(w, ctx, outputCols)} AS ${dialect.quoteIdent(w.alias)}`)
+      .map((w) => `${compileWindow(w, ctx, outputCols)} AS ${ctx.dialect.quoteIdent(w.alias)}`)
       .join(", ");
     wins.forEach((w) => columns.push({ name: w.alias, role: "window" }));
-    sql = `SELECT *, ${winSelect} FROM (${base}) AS ${dialect.quoteIdent("__base")}`;
+    sql = `SELECT *, ${winSelect} FROM (${base}) AS ${ctx.dialect.quoteIdent("__base")}`;
   } else {
     sql = base;
   }
@@ -214,7 +284,7 @@ export function compileIR(
     sql += ` OFFSET ${bind(ctx, Math.floor(ir.offset))}`;
   }
 
-  return { sql, params: ctx.params, columns };
+  return { sql, columns };
 }
 
 // ── Window functions (compiled in an outer SELECT over the base query) ──────────
@@ -293,8 +363,18 @@ function compileWindow(w: WindowSpec, ctx: Ctx, outputCols: Set<string>): string
 
 function fromClause(ir: QueryIR, ctx: Ctx): string {
   const d = ctx.dialect;
-  let sql = d.quoteIdent(ir.source.table);
-  if (ir.source.alias) sql += ` AS ${d.quoteIdent(ir.source.alias)}`;
+  let sql: string;
+  if (isQuerySource(ir.source)) {
+    // Multi-stage: the inner query compiles as a subquery; its params emit here
+    // (textually before the outer WHERE), preserving positional order. The alias
+    // is required so the outer stage can reference the subquery's columns.
+    const alias = ir.source.alias ?? "__stage";
+    const inner = compileQuery(ir.source.query, ctx);
+    sql = `(${inner.sql}) AS ${d.quoteIdent(alias)}`;
+  } else {
+    sql = d.quoteIdent(ir.source.table);
+    if (ir.source.alias) sql += ` AS ${d.quoteIdent(ir.source.alias)}`;
+  }
 
   for (const j of ir.joins ?? []) {
     if (ctx.allowedTables && !ctx.allowedTables.has(j.table)) {
@@ -332,11 +412,13 @@ function resolveField(ref: FieldRef, ctx: Ctx): string {
       return `(${sql})`;
     }
     case "aggregation": {
-      const alias = ctx.aggAlias[ref.index];
-      if (alias === undefined) {
+      const agg = ctx.aggs[ref.index];
+      if (agg === undefined) {
         throw new CompileError(`Aggregation index ${ref.index} is out of range.`);
       }
-      return ctx.dialect.quoteIdent(alias);
+      return ctx.aggMode === "expr"
+        ? compileAggregation(agg, ctx)
+        : ctx.dialect.quoteIdent(ctx.aggAlias[ref.index]);
     }
   }
 }
@@ -345,16 +427,35 @@ function resolveField(ref: FieldRef, ctx: Ctx): string {
 
 function compileDimension(dim: Dimension, ctx: Ctx): string {
   const base = resolveField(dim.field, ctx);
-  return dim.temporal ? ctx.dialect.temporalBucket(dim.temporal, base) : base;
+  if (dim.temporal) return ctx.dialect.temporalBucket(dim.temporal, base);
+  if (dim.bin) {
+    const w = dim.bin.width;
+    if (!Number.isFinite(w) || w <= 0) {
+      throw new CompileError("Bin width must be a positive number.");
+    }
+    return ctx.dialect.numericBin(w, base);
+  }
+  return base;
 }
 
 function compileAggregation(agg: Aggregation, ctx: Ctx): string {
+  // Conditional aggregates compile to CASE expressions (uniform across dialects).
+  // Their predicate literals are always INLINED (never bound): the aggregate may
+  // be re-emitted in HAVING (aggMode "expr"), and bound params would desync.
+  if (agg.fn === "count_if" || agg.fn === "sum_if") {
+    if (!agg.filter) throw new CompileError(`"${agg.fn}" requires a condition.`);
+    const cond = compileFilter(agg.filter, { ...ctx, inline: true });
+    if (agg.fn === "count_if") return `count(CASE WHEN ${cond} THEN 1 END)`;
+    if (!agg.field) throw new CompileError(`"sum_if" requires a field.`);
+    return `sum(CASE WHEN ${cond} THEN ${resolveField(agg.field, ctx)} END)`;
+  }
+
   const argSql = agg.field ? resolveField(agg.field, ctx) : null;
   const distinct = agg.distinct === true || agg.fn === "count_distinct";
   if (agg.fn !== "count" && agg.fn !== "count_distinct" && argSql === null) {
     throw new CompileError(`Aggregation "${agg.fn}" requires a field.`);
   }
-  return ctx.dialect.aggregate(agg.fn, argSql, distinct);
+  return ctx.dialect.aggregate(agg.fn, argSql, distinct, agg.p);
 }
 
 // ── Expressions (closed algebra; literals inlined) ───────────────────────────────
@@ -468,10 +569,13 @@ function deriveName(ref: FieldRef): string {
 
 function defaultDimAlias(dim: Dimension): string {
   const base = deriveName(dim.field);
-  return dim.temporal ? `${base}_${dim.temporal}` : base;
+  if (dim.temporal) return `${base}_${dim.temporal}`;
+  if (dim.bin) return `${base}_bin`;
+  return base;
 }
 
 function defaultAggAlias(agg: Aggregation, index: number): string {
   if (agg.fn === "count" && !agg.field) return "count";
+  if (agg.fn === "count_if") return "count_if";
   return agg.field ? `${agg.fn}_${deriveName(agg.field)}` : `${agg.fn}_${index}`;
 }

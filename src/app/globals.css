@@ -12,6 +12,15 @@
   :root {
     --background: 0 0% 100%;
     --foreground: 0 0% 9%;
+    /* Secondary text a step brighter than muted-foreground (Supabase
+       foreground-light) — panel titles, active nav items. */
+    --foreground-light: 0 0% 30%;
+    /* Surface ramp — Studio panels step UP from the page background:
+       100 = subtle fill (table headers, wells), 200 = raised panel,
+       300 = highest (hover fills, active rows). */
+    --surface-100: 0 0% 98%;
+    --surface-200: 0 0% 96%;
+    --surface-300: 0 0% 94%;
     --card: 0 0% 100%;
     --card-foreground: 0 0% 9%;
     --popover: 0 0% 100%;
@@ -21,15 +30,32 @@
     --primary-foreground: 0 0% 100%;
     --brand: 153 60% 42%;
     --brand-foreground: 0 0% 100%;
+    /* Brand shade scale (absolute greens, shared across themes) — Supabase primary button. */
+    --brand-400: 153 57% 53%;
+    --brand-500: 153 60% 42%;
+    --brand-600: 153 63% 34%;
     --destructive: 0 72% 51%;
     --destructive-foreground: 0 0% 98%;
+    /* Soft-fill shades for the Supabase danger button (light red surface, dark text). */
+    --destructive-300: 0 74% 91%;
+    --destructive-400: 0 74% 84%;
+    /* Amber warning button (Supabase warning variant). */
+    --warning: 38 92% 50%;
+    --warning-300: 38 95% 90%;
+    --warning-400: 40 92% 82%;
     --secondary: 0 0% 96%;
     --secondary-foreground: 0 0% 12%;
     --muted: 0 0% 96%;
     --muted-foreground: 0 0% 40%;
     --accent: 0 0% 94.5%;
     --accent-foreground: 0 0% 12%;
+    /* Border tiers (Supabase border-muted/default/strong/stronger):
+       muted = hairlines inside panels, default = panel edges,
+       strong = control borders at rest, stronger = control hover. */
+    --border-muted: 0 0% 92.5%;
     --border: 0 0% 90%;
+    --border-strong: 0 0% 84%;
+    --border-stronger: 0 0% 75%;
     --input: 0 0% 89%;
     --ring: 153 60% 42%;
     --radius: 0.375rem;
@@ -37,40 +63,54 @@
     --code-string: 142 71% 35%;
     --code-number: 32 90% 42%;
 
-    /* ── Data-viz palette (validated; see src/lib/viz/palette.ts) ──────────
-       Full-color values (not HSL triplets) — reference as `var(--viz-1)`.
-       Categorical slots are a FIXED order; never cycled. Light mode. */
-    --viz-1: #2a78d6;
-    --viz-2: #1baf7a;
-    --viz-3: #eda100;
-    --viz-4: #008300;
-    --viz-5: #4a3aa7;
-    --viz-6: #e34948;
-    --viz-7: #e87ba4;
-    --viz-8: #eb6834;
-    /* Sequential (blue, near-zero → max) for heat/choropleth. */
-    --viz-seq-0: #cde2fb;
-    --viz-seq-1: #86b6ef;
-    --viz-seq-2: #3987e5;
-    --viz-seq-3: #256abf;
-    --viz-seq-4: #104281;
+    /* Notebook (query-builder) step accents — Metabase's section coding in
+       Supabase-calibrated tones. HSL triplets; used via the static class maps
+       in AdvancedQueryBuilder. */
+    --nb-data: 210 64% 44%;
+    --nb-filter: 258 50% 55%;
+    --nb-summarize: 153 60% 34%;
+    --nb-window: 190 70% 34%;
+
+    /* ── Data-viz palette (Supabase-flavored: brand green leads; see
+       src/lib/viz/palette.ts). Full-color values (not HSL triplets) —
+       reference as `var(--viz-1)`. Categorical slots are a FIXED order;
+       never cycled. Light mode. */
+    --viz-1: #109c6c;
+    --viz-2: #2f7fc1;
+    --viz-3: #d99311;
+    --viz-4: #178f9b;
+    --viz-5: #7c6bd6;
+    --viz-6: #d45a5a;
+    --viz-7: #c959a4;
+    --viz-8: #6f9a2c;
+    /* Sequential (brand green, near-zero → max) for heat/choropleth. */
+    --viz-seq-0: #d9f2e5;
+    --viz-seq-1: #93dcb9;
+    --viz-seq-2: #41c084;
+    --viz-seq-3: #1e9a64;
+    --viz-seq-4: #0c6a44;
     /* Status (fixed — never themed, never a series color). */
     --viz-good: #0ca30c;
     --viz-warning: #fab219;
     --viz-serious: #ec835a;
     --viz-critical: #d03b3b;
     /* Chart chrome. */
-    --viz-grid: #e1e0d9;
-    --viz-axis: #c3c2b7;
+    --viz-grid: #e7e7e7;
+    --viz-axis: #c9c9c9;
   }
 
   /* Dark theme — Supabase Studio's default look. Applied via `.dark` on <html>. */
   .dark {
-    --background: 0 0% 7%;
+    /* Supabase Studio's actual page shade: #1c1c1c (11%), panels #232323. */
+    --background: 0 0% 11%;
     --foreground: 0 0% 95%;
-    --card: 0 0% 9.5%;
+    --foreground-light: 0 0% 78%;
+    --surface-100: 0 0% 13.7%;
+    --surface-200: 0 0% 16%;
+    --surface-300: 0 0% 18.4%;
+    --card: 0 0% 13.7%;
     --card-foreground: 0 0% 95%;
-    --popover: 0 0% 9.5%;
+    --popover: 0 0% 13.7%;
     --popover-foreground: 0 0% 95%;
     /* Brighter green so it pops on dark surfaces */
     --primary: 153 60% 53%;
@@ -79,39 +119,56 @@
     --brand-foreground: 152 40% 8%;
     --destructive: 0 62% 45%;
     --destructive-foreground: 0 0% 98%;
-    --secondary: 0 0% 15%;
+    /* Muted deep-red fills on dark surfaces. */
+    --destructive-300: 0 55% 22%;
+    --destructive-400: 0 55% 30%;
+    /* Muted amber fills on dark surfaces. */
+    --warning: 38 92% 55%;
+    --warning-300: 38 55% 22%;
+    --warning-400: 40 60% 30%;
+    --secondary: 0 0% 16%;
     --secondary-foreground: 0 0% 95%;
-    --muted: 0 0% 15%;
-    --muted-foreground: 0 0% 60%;
-    --accent: 0 0% 17%;
+    --muted: 0 0% 16%;
+    --muted-foreground: 0 0% 62%;
+    --accent: 0 0% 18.4%;
     --accent-foreground: 0 0% 95%;
-    --border: 0 0% 18%;
-    --input: 0 0% 20%;
+    --border-muted: 0 0% 15.5%;
+    --border: 0 0% 18.5%;
+    --border-strong: 0 0% 24%;
+    --border-stronger: 0 0% 33%;
+    --input: 0 0% 21%;
     --ring: 153 60% 53%;
     --code-string: 142 60% 55%;
     --code-number: 35 90% 62%;
 
-    /* Data-viz palette — dark steps (same hues stepped for the dark surface,
-       validated as a set against #1a1a19). */
-    --viz-1: #3987e5;
-    --viz-2: #199e70;
-    --viz-3: #c98500;
-    --viz-4: #008300;
-    --viz-5: #9085e9;
-    --viz-6: #e66767;
-    --viz-7: #d55181;
-    --viz-8: #d95926;
-    --viz-seq-0: #104281;
-    --viz-seq-1: #256abf;
-    --viz-seq-2: #3987e5;
-    --viz-seq-3: #86b6ef;
-    --viz-seq-4: #cde2fb;
+    /* Notebook step accents — brighter for dark surfaces (used as tinted
+       fills + colored text, never solid). */
+    --nb-data: 210 70% 64%;
+    --nb-filter: 258 65% 72%;
+    --nb-summarize: 153 55% 52%;
+    --nb-window: 190 60% 55%;
+
+    /* Data-viz palette — dark steps (Supabase signature green leads; same
+       hues brightened for the dark surface, validated against #1c1c1c). */
+    --viz-1: #3ecf8e;
+    --viz-2: #5aa9f0;
+    --viz-3: #f2b03d;
+    --viz-4: #38c1cc;
+    --viz-5: #a495f2;
+    --viz-6: #ef7070;
+    --viz-7: #e07ec1;
+    --viz-8: #a3cf53;
+    --viz-seq-0: #0e5c3c;
+    --viz-seq-1: #1e9a64;
+    --viz-seq-2: #3ecf8e;
+    --viz-seq-3: #86e3b8;
+    --viz-seq-4: #d0f5e4;
     --viz-good: #0ca30c;
     --viz-warning: #fab219;
     --viz-serious: #ec835a;
     --viz-critical: #d03b3b;
-    --viz-grid: #2c2c2a;
-    --viz-axis: #383835;
+    --viz-grid: #2a2a2a;
+    --viz-axis: #3d3d3d;
   }
 }
 

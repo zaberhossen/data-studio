@@ -25,7 +25,9 @@ import {
   FileSpreadsheet,
   Globe,
   HelpCircle,
+  Loader2,
   LogOut,
+  Plus,
   Search,
   Slash,
   Sparkles,
@@ -83,7 +85,7 @@ export function AppHeader({ onOpenCommand }: { onOpenCommand?: () => void }) {
         <button
           type="button"
           onClick={onOpenCommand}
-          className="hidden items-center gap-2 rounded-md border border-border bg-card px-2.5 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground md:flex"
+          className="hidden items-center gap-2 rounded-full border border-border bg-card px-3 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground md:flex"
           title="Command menu"
         >
           <Search className="h-3.5 w-3.5" />
@@ -138,31 +140,65 @@ function TriggerButton({ children }: { children: React.ReactNode }) {
   );
 }
 
-/** Org/workspace switcher — functional: switches the active org via the session. */
+/**
+ * Org/workspace switcher — functional: lists the caller's workspaces with a
+ * live search filter, switches the active org via the session, and creates a
+ * brand-new workspace inline (POST /api/orgs → switch to it).
+ */
 function OrgSwitcher() {
   const { data, update } = useSession();
   const router = useRouter();
   const [orgs, setOrgs] = React.useState<OrgSummary[]>([]);
+  const [open, setOpen] = React.useState(false);
+  const [query, setQuery] = React.useState("");
   const [switching, setSwitching] = React.useState(false);
+  const [creating, setCreating] = React.useState(false);
+  const [newName, setNewName] = React.useState("");
+  const [busy, setBusy] = React.useState(false);
+  const searchRef = React.useRef<HTMLInputElement>(null);
   const activeOrgId = data?.user?.orgId ?? null;
 
-  React.useEffect(() => {
-    let alive = true;
-    void fetch("/api/orgs")
+  const loadOrgs = React.useCallback(async (): Promise<OrgSummary[]> => {
+    const rows: OrgSummary[] = await fetch("/api/orgs")
       .then((r) => (r.ok ? r.json() : []))
-      .then((rows: OrgSummary[]) => {
-        if (alive) setOrgs(rows);
-      })
-      .catch(() => {});
-    return () => {
-      alive = false;
-    };
-  }, [activeOrgId]);
+      .catch(() => []);
+    setOrgs(rows);
+    return rows;
+  }, []);
+
+  React.useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- async load on mount/org switch; not derivable during render
+    void loadOrgs();
+  }, [loadOrgs, activeOrgId]);
+
+  // Reset the transient UI whenever the menu closes.
+  React.useEffect(() => {
+    if (!open) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- reset transient menu state on close; keying by `open` would remount Radix's portal
+      setQuery("");
+      setCreating(false);
+      setNewName("");
+    }
+  }, [open]);
+
+  // Pull focus into the search box on open (Radix's focus scope grabs the first
+  // menu item first; reclaim it on the next frame so typing filters).
+  React.useEffect(() => {
+    if (!open || creating) return;
+    const id = requestAnimationFrame(() => searchRef.current?.focus());
+    return () => cancelAnimationFrame(id);
+  }, [open, creating]);
 
   const active = orgs.find((o) => o.active) ?? orgs.find((o) => o.id === activeOrgId) ?? null;
   const label = active?.name ?? "Workspace";
 
+  const filtered = React.useMemo(() => {
+    const q = query.trim().toLowerCase();
+    return q ? orgs.filter((o) => o.name.toLowerCase().includes(q)) : orgs;
+  }, [orgs, query]);
+
   const switchOrg = async (id: string) => {
+    setOpen(false);
     if (id === activeOrgId) return;
     setSwitching(true);
     try {
@@ -173,8 +209,27 @@ function OrgSwitcher() {
     }
   };
 
+  const createOrg = async () => {
+    const name = newName.trim();
+    if (!name || busy) return;
+    setBusy(true);
+    try {
+      const res = await fetch("/api/orgs", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name }),
+      });
+      if (!res.ok) return;
+      const created = (await res.json()) as OrgSummary;
+      await loadOrgs();
+      await switchOrg(created.id);
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
-    <DropdownMenu>
+    <DropdownMenu open={open} onOpenChange={setOpen}>
       <DropdownMenuTrigger asChild>
         <button
           type="button"
@@ -186,20 +241,84 @@ function OrgSwitcher() {
           <ChevronsUpDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
         </button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="start" className="min-w-[15rem]">
-        <DropdownMenuLabel>Workspaces</DropdownMenuLabel>
-        {orgs.length === 0 ? (
-          <div className="px-2 py-1.5 text-xs text-muted-foreground">No workspaces</div>
+      <DropdownMenuContent align="start" className="min-w-[16rem] p-0">
+        {creating ? (
+          <div className="p-2">
+            <DropdownMenuLabel className="px-1 pb-1.5">New workspace</DropdownMenuLabel>
+            <input
+              autoFocus
+              value={newName}
+              onChange={(e) => setNewName(e.target.value)}
+              onKeyDown={(e) => {
+                e.stopPropagation();
+                if (e.key === "Enter") void createOrg();
+                if (e.key === "Escape") setCreating(false);
+              }}
+              placeholder="Workspace name"
+              className="h-8 w-full rounded-md border border-border bg-background px-2 text-sm outline-none placeholder:text-muted-foreground focus-visible:ring-1 focus-visible:ring-ring"
+            />
+            <div className="mt-2 flex items-center justify-end gap-1.5">
+              <button
+                type="button"
+                onClick={() => setCreating(false)}
+                className="h-7 rounded-md px-2.5 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => void createOrg()}
+                disabled={!newName.trim() || busy}
+                className="inline-flex h-7 items-center gap-1.5 rounded-md border border-brand-500/75 bg-brand-400 px-2.5 text-xs text-foreground transition-colors hover:bg-brand/80 hover:border-brand-600 disabled:opacity-50 dark:border-brand/30 dark:bg-brand-500 dark:hover:bg-brand/50"
+              >
+                {busy && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+                Create
+              </button>
+            </div>
+          </div>
         ) : (
-          orgs.map((o) => (
-            <DropdownMenuItem key={o.id} onSelect={() => void switchOrg(o.id)}>
-              <span className="flex h-5 w-5 items-center justify-center rounded bg-secondary text-[10px] font-semibold uppercase">
-                {o.name.slice(0, 1)}
-              </span>
-              <span className="flex-1 truncate">{o.name}</span>
-              {o.active && <Check className="h-3.5 w-3.5 text-primary" />}
-            </DropdownMenuItem>
-          ))
+          <>
+            <div className="flex items-center gap-2 border-b border-border px-2.5">
+              <Search className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+              <input
+                ref={searchRef}
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                onKeyDown={(e) => e.stopPropagation()}
+                placeholder="Find workspace…"
+                className="h-9 w-full bg-transparent text-sm outline-none placeholder:text-muted-foreground"
+              />
+            </div>
+            <div className="max-h-64 overflow-y-auto p-1">
+              {filtered.length === 0 ? (
+                <div className="px-2 py-4 text-center text-xs text-muted-foreground">
+                  {orgs.length === 0 ? "No workspaces" : "No matches"}
+                </div>
+              ) : (
+                filtered.map((o) => (
+                  <DropdownMenuItem key={o.id} onSelect={() => void switchOrg(o.id)}>
+                    <span className="flex h-5 w-5 items-center justify-center rounded bg-secondary text-[10px] font-semibold uppercase">
+                      {o.name.slice(0, 1)}
+                    </span>
+                    <span className="flex-1 truncate">{o.name}</span>
+                    {o.active && <Check className="h-3.5 w-3.5 text-primary" />}
+                  </DropdownMenuItem>
+                ))
+              )}
+            </div>
+            <DropdownMenuSeparator className="mx-0 my-0" />
+            <div className="p-1">
+              <DropdownMenuItem
+                onSelect={(e) => {
+                  e.preventDefault();
+                  setCreating(true);
+                }}
+              >
+                <Plus className="text-muted-foreground" />
+                <span className="flex-1">New workspace</span>
+              </DropdownMenuItem>
+            </div>
+          </>
         )}
       </DropdownMenuContent>
     </DropdownMenu>
@@ -248,7 +367,7 @@ function ConnectionIndicator() {
   const meta = STATUS_META[status];
   return (
     <span
-      className="ml-1 hidden items-center gap-1.5 rounded-md border border-border px-2 py-1 text-xs text-muted-foreground lg:flex"
+      className="ml-1 hidden items-center gap-1.5 rounded-full border border-border px-2.5 py-1 text-xs text-muted-foreground lg:flex"
       title={meta.label}
     >
       <span className={cn("h-1.5 w-1.5 rounded-full", meta.dot)} />

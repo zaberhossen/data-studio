@@ -21,33 +21,61 @@ import {
   AlignStartHorizontal,
   AlignStartVertical,
   AlignVerticalDistributeCenter,
+  ArrowLeft,
+  ArrowRight,
   Bold,
   BringToFront,
+  Frame,
+  Group,
   Image as ImageIcon,
   Italic,
+  Layers,
   Minus,
+  Play,
+  Ruler,
   SendToBack,
+  Settings2,
   Square,
   Trash2,
   Type,
+  Ungroup,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { cn } from "@/lib/utils";
 import type { AlignEdge, DistributeAxis } from "@/lib/dashboard/align";
-import type { CanvasElement, ElementContent } from "@/lib/types/dashboard";
+import type { CanvasConfig, CanvasElement, ElementContent } from "@/lib/types/dashboard";
+import { DEFAULT_GRID_SIZE } from "@/lib/types/dashboard";
 
 interface Props {
   selectionCount: number;
   /** The sole selected element (any kind), or null when 0 or ≥ 2 are selected. */
   element: CanvasElement | null;
   onAdd: (kind: CanvasElement["kind"]) => void;
+  /** Add a named artboard (frame). */
+  onAddFrame?: () => void;
   onUpdateContent: (content: ElementContent) => void;
   onAlign: (edge: AlignEdge) => void;
   onDistribute: (axis: DistributeAxis) => void;
   onBringToFront: () => void;
   onSendToBack: () => void;
   onDelete: () => void;
+  /** Whether the current selection can be grouped (≥2 non-frame items). */
+  canGroup?: boolean;
+  /** Whether the current selection contains a persisted group. */
+  canUngroup?: boolean;
+  onGroup?: () => void;
+  onUngroup?: () => void;
+  /** Current canvas surface config (size/background/grid/rulers). */
+  canvas?: CanvasConfig;
+  /** Patch the canvas surface config. */
+  onUpdateCanvas?: (patch: Partial<Omit<CanvasConfig, "frames">>) => void;
+  /** Enter full-screen frame-by-frame presentation. */
+  onPresent?: () => void;
+  /** Layers panel toggle (right sidebar). */
+  layersOpen?: boolean;
+  onToggleLayers?: () => void;
 }
 
 const HEX_FALLBACK = "#6366f1";
@@ -58,16 +86,29 @@ export function CanvasToolbar({
   selectionCount,
   element,
   onAdd,
+  onAddFrame,
   onUpdateContent,
   onAlign,
   onDistribute,
   onBringToFront,
   onSendToBack,
   onDelete,
+  canGroup,
+  canUngroup,
+  onGroup,
+  onUngroup,
+  canvas,
+  onUpdateCanvas,
+  onPresent,
+  layersOpen,
+  onToggleLayers,
 }: Props) {
   return (
     <div className="flex flex-wrap items-center gap-1.5 border-b border-border bg-muted/30 px-4 py-2">
       {/* Add elements */}
+      {onAddFrame && (
+        <AddButton icon={<Frame className="h-3.5 w-3.5" />} label="Frame" onClick={onAddFrame} />
+      )}
       <AddButton icon={<Type className="h-3.5 w-3.5" />} label="Text" onClick={() => onAdd("text")} />
       <AddButton icon={<ImageIcon className="h-3.5 w-3.5" />} label="Image" onClick={() => onAdd("image")} />
       <AddButton icon={<Square className="h-3.5 w-3.5" />} label="Shape" onClick={() => onAdd("shape")} />
@@ -103,6 +144,23 @@ export function CanvasToolbar({
         </>
       ) : null}
 
+      {/* Group / ungroup */}
+      {(canGroup || canUngroup) && (onGroup || onUngroup) ? (
+        <>
+          <Divider />
+          {canGroup && onGroup && (
+            <Button variant="ghost" size="sm" className="h-8" onClick={onGroup} title="Group (⌘G)">
+              <Group className="h-3.5 w-3.5" />
+            </Button>
+          )}
+          {canUngroup && onUngroup && (
+            <Button variant="ghost" size="sm" className="h-8" onClick={onUngroup} title="Ungroup (⌘⇧G)">
+              <Ungroup className="h-3.5 w-3.5" />
+            </Button>
+          )}
+        </>
+      ) : null}
+
       {/* Z-order + delete */}
       {selectionCount > 0 ? (
         <>
@@ -129,7 +187,133 @@ export function CanvasToolbar({
           Drag to move · handles to resize/rotate · shift-click for multi-select
         </span>
       )}
+
+      <div className="ml-auto flex items-center gap-1.5">
+        {onPresent && (
+          <Button variant="ghost" size="sm" className="h-8" onClick={onPresent} title="Present (full screen)">
+            <Play className="h-3.5 w-3.5" />
+            Present
+          </Button>
+        )}
+        {canvas && onUpdateCanvas && (
+          <CanvasSettings canvas={canvas} onUpdateCanvas={onUpdateCanvas} />
+        )}
+        {onToggleLayers && (
+          <Button
+            variant={layersOpen ? "secondary" : "ghost"}
+            size="sm"
+            className="h-8"
+            onClick={onToggleLayers}
+            title="Toggle layers panel"
+          >
+            <Layers className="h-3.5 w-3.5" />
+            Layers
+          </Button>
+        )}
+      </div>
     </div>
+  );
+}
+
+/**
+ * CanvasSettings — a popover editing the canvas SURFACE: pixel size, background,
+ * and the alignment-grid / ruler helpers. These live on `CanvasConfig` (persisted
+ * in the `canvas` jsonb) and drive the stage overlay + Moveable snapping.
+ */
+function CanvasSettings({
+  canvas,
+  onUpdateCanvas,
+}: {
+  canvas: CanvasConfig;
+  onUpdateCanvas: (patch: Partial<Omit<CanvasConfig, "frames">>) => void;
+}) {
+  const gridSize = canvas.gridSize ?? DEFAULT_GRID_SIZE;
+  return (
+    <Popover>
+      <PopoverTrigger asChild>
+        <Button variant="ghost" size="sm" className="h-8" title="Canvas settings">
+          <Settings2 className="h-3.5 w-3.5" />
+          Canvas
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent align="end" className="w-64 space-y-3">
+        <p className="text-xs font-semibold text-foreground">Canvas</p>
+
+        <div className="flex items-center gap-2">
+          <NumField
+            label="W"
+            value={canvas.width}
+            min={200}
+            max={10000}
+            onChange={(w) => onUpdateCanvas({ width: w })}
+          />
+          <NumField
+            label="H"
+            value={canvas.height}
+            min={200}
+            max={10000}
+            onChange={(h) => onUpdateCanvas({ height: h })}
+          />
+        </div>
+
+        <label className="flex items-center justify-between text-xs text-muted-foreground">
+          Background
+          <ColorField
+            label="Canvas background"
+            value={hexOr(canvas.background, "#ffffff")}
+            onChange={(v) => onUpdateCanvas({ background: v })}
+          />
+        </label>
+
+        <div className="h-px bg-border" />
+
+        <div className="flex items-center gap-1.5">
+          <Ruler className="h-3.5 w-3.5 text-muted-foreground" />
+          <span className="text-xs font-medium text-foreground">Grid &amp; guides</span>
+        </div>
+        <label className="flex items-center justify-between text-xs text-muted-foreground">
+          Show grid
+          <input
+            type="checkbox"
+            checked={!!canvas.showGrid}
+            onChange={(e) => onUpdateCanvas({ showGrid: e.target.checked })}
+            className="h-3.5 w-3.5 accent-primary"
+          />
+        </label>
+        <label className="flex items-center justify-between text-xs text-muted-foreground">
+          Snap to grid
+          <input
+            type="checkbox"
+            checked={!!canvas.snapToGrid}
+            onChange={(e) => onUpdateCanvas({ snapToGrid: e.target.checked })}
+            className="h-3.5 w-3.5 accent-primary"
+          />
+        </label>
+        <label className="flex items-center justify-between text-xs text-muted-foreground">
+          Show rulers
+          <input
+            type="checkbox"
+            checked={!!canvas.showRulers}
+            onChange={(e) => onUpdateCanvas({ showRulers: e.target.checked })}
+            className="h-3.5 w-3.5 accent-primary"
+          />
+        </label>
+        <label className="flex items-center justify-between text-xs text-muted-foreground">
+          Grid size
+          <Input
+            type="number"
+            min={2}
+            max={200}
+            value={gridSize}
+            onChange={(e) =>
+              onUpdateCanvas({ gridSize: Math.max(2, Math.min(200, Number(e.target.value) || DEFAULT_GRID_SIZE)) })
+            }
+            className="h-8 w-16"
+            aria-label="Grid size"
+          />
+        </label>
+      </PopoverContent>
+    </Popover>
   );
 }
 
@@ -162,6 +346,7 @@ function ElementControls({
         </div>
         <NumField label="Size" value={c.fontSize ?? 16} min={8} max={96} onChange={(n) => onUpdateContent({ ...c, fontSize: n })} />
         <ColorField label="Text color" value={hexOr(c.color, "#111827")} onChange={(v) => onUpdateContent({ ...c, color: v })} />
+        <PillToggle active={c.markdown} label="MD" title="Render as Markdown" onClick={() => onUpdateContent({ ...c, markdown: !c.markdown })} />
       </>
     );
   }
@@ -187,6 +372,18 @@ function ElementControls({
         <Seg value={c.shape} options={[["rect", "Rectangle"], ["ellipse", "Ellipse"]]} onChange={(v) => onUpdateContent({ ...c, shape: v as "rect" | "ellipse" })} />
         <ColorField label="Fill" value={hexOr(c.fill, HEX_FALLBACK)} onChange={(v) => onUpdateContent({ ...c, fill: v })} />
         <ColorField label="Stroke" value={hexOr(c.stroke, "#000000")} onChange={(v) => onUpdateContent({ ...c, stroke: v })} />
+        <NumField label="Border" value={c.strokeWidth ?? 2} min={0} max={40} onChange={(n) => onUpdateContent({ ...c, strokeWidth: n })} />
+        {c.shape === "rect" && (
+          <NumField label="Radius" value={c.radius ?? 8} min={0} max={200} onChange={(n) => onUpdateContent({ ...c, radius: n })} />
+        )}
+        <NumField
+          label="Opacity %"
+          value={Math.round((c.opacity ?? 1) * 100)}
+          min={0}
+          max={100}
+          onChange={(n) => onUpdateContent({ ...c, opacity: Math.max(0, Math.min(1, n / 100)) })}
+        />
+        <PillToggle active={c.shadow} label="Shadow" title="Drop shadow" onClick={() => onUpdateContent({ ...c, shadow: !c.shadow })} />
       </>
     );
   }
@@ -196,7 +393,39 @@ function ElementControls({
     <>
       <ColorField label="Stroke" value={hexOr(c.stroke, "#111827")} onChange={(v) => onUpdateContent({ ...c, stroke: v })} />
       <NumField label="Width" value={c.strokeWidth ?? 2} min={1} max={40} onChange={(n) => onUpdateContent({ ...c, strokeWidth: n })} />
+      <Seg
+        value={c.dash ?? "solid"}
+        options={[["solid", "Solid"], ["dashed", "Dashed"], ["dotted", "Dotted"]]}
+        onChange={(v) => onUpdateContent({ ...c, dash: v as "solid" | "dashed" | "dotted" })}
+      />
+      <div className="inline-flex rounded-md border border-border bg-background p-0.5">
+        <IconToggle active={c.startArrow} label="Start arrow" onClick={() => onUpdateContent({ ...c, startArrow: !c.startArrow })}>
+          <ArrowLeft className="h-3.5 w-3.5" />
+        </IconToggle>
+        <IconToggle active={c.endArrow} label="End arrow" onClick={() => onUpdateContent({ ...c, endArrow: !c.endArrow })}>
+          <ArrowRight className="h-3.5 w-3.5" />
+        </IconToggle>
+      </div>
     </>
+  );
+}
+
+/** A small labeled on/off toggle (for boolean style flags without an icon). */
+function PillToggle({ active, label, title, onClick }: { active?: boolean; label: string; title: string; onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      aria-label={title}
+      aria-pressed={active}
+      title={title}
+      onClick={onClick}
+      className={cn(
+        "inline-flex h-8 items-center rounded-md border border-border px-2 text-xs font-medium hover:bg-accent",
+        active && "bg-accent text-accent-foreground",
+      )}
+    >
+      {label}
+    </button>
   );
 }
 

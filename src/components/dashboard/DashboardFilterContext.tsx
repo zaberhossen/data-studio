@@ -23,6 +23,7 @@ import type {
   DashboardFilter,
   FilterValue,
 } from "@/lib/types/dashboard";
+import { filtersFromSearch, searchWithFilters } from "@/lib/dashboard/filter-url";
 
 // ── Context shape ─────────────────────────────────────────────────────────────
 
@@ -79,15 +80,56 @@ let crossFilterSeq = 0;
 
 interface DashboardFilterProviderProps {
   filterDefs: DashboardFilter[];
+  /**
+   * Mirror active filter values into the page URL (`?f.<id>=…`) so a filtered
+   * view is shareable/bookmarkable, and seed initial values from the URL.
+   * Locked filters are never URL-driven (author-pinned). Off for public/embed.
+   */
+  urlSync?: boolean;
   children: React.ReactNode;
+}
+
+/**
+ * The initial active values: each definition's persisted `default`, then (when
+ * `urlSync`) overridden by any `f.<id>` URL param — except LOCKED filters, which
+ * are pinned to their default and ignore the URL.
+ */
+function initialActive(filterDefs: DashboardFilter[], urlSync: boolean): ActiveFilters {
+  const seed: ActiveFilters = {};
+  for (const def of filterDefs) {
+    if (def.default !== undefined) seed[def.id] = def.default;
+  }
+  if (urlSync && typeof window !== "undefined") {
+    const fromUrl = filtersFromSearch(window.location.search);
+    const byId = new Map(filterDefs.map((d) => [d.id, d]));
+    for (const [id, value] of Object.entries(fromUrl)) {
+      const def = byId.get(id);
+      if (def && !def.locked) seed[id] = value;
+    }
+  }
+  return seed;
 }
 
 export function DashboardFilterProvider({
   filterDefs,
+  urlSync = false,
   children,
 }: DashboardFilterProviderProps) {
-  const [activeFilters, setActiveFilters] = React.useState<ActiveFilters>({});
-  const [debouncedFilters, setDebouncedFilters] = React.useState<ActiveFilters>({});
+  // Ids whose values are author-pinned — never written to the URL.
+  const lockedIds = React.useMemo(
+    () => new Set(filterDefs.filter((d) => d.locked).map((d) => d.id)),
+    [filterDefs],
+  );
+
+  // Defaults (+ URL overrides) are applied ONCE, at mount — the provider is keyed
+  // by dashboard id (see DashboardPanel), so switching dashboards remounts with
+  // fresh defaults and never leaks another dashboard's active values.
+  const [activeFilters, setActiveFilters] = React.useState<ActiveFilters>(() =>
+    initialActive(filterDefs, urlSync),
+  );
+  const [debouncedFilters, setDebouncedFilters] = React.useState<ActiveFilters>(
+    () => activeFilters,
+  );
   const [crossFilters, setCrossFilters] = React.useState<CrossFilter[]>([]);
 
   const debounceRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -111,8 +153,19 @@ export function DashboardFilterProvider({
     };
   }, []);
 
+  // Mirror active values into the URL (replaceState — no history spam). Locked
+  // filters are excluded (author-pinned, not shareable state).
+  React.useEffect(() => {
+    if (!urlSync || typeof window === "undefined") return;
+    const query = searchWithFilters(window.location.search, activeFilters, lockedIds);
+    const { pathname, hash } = window.location;
+    const url = `${pathname}${query ? `?${query}` : ""}${hash}`;
+    window.history.replaceState(window.history.state, "", url);
+  }, [urlSync, activeFilters, lockedIds]);
+
   const setFilter = React.useCallback(
     (filterId: string, value: FilterValue | undefined, immediate = false) => {
+      if (lockedIds.has(filterId)) return; // author-pinned: not user-editable
       setActiveFilters((prev) => {
         const next = { ...prev };
         if (value === undefined) delete next[filterId];
@@ -121,21 +174,32 @@ export function DashboardFilterProvider({
         return next;
       });
     },
-    [applyDebounced],
+    [applyDebounced, lockedIds],
   );
 
   const clearFilter = React.useCallback(
     (filterId: string) => {
+      // Required (and locked) filters reset to their default rather than empty.
+      const def = filterDefs.find((d) => d.id === filterId);
+      if (def && (def.required || def.locked)) {
+        setFilter(filterId, def.default, true);
+        return;
+      }
       setFilter(filterId, undefined, true);
     },
-    [setFilter],
+    [setFilter, filterDefs],
   );
 
   const clearAllFilters = React.useCallback(() => {
-    setActiveFilters({});
+    // Keep locked + required filters at their default; clear the rest.
+    const floor: ActiveFilters = {};
+    for (const def of filterDefs) {
+      if ((def.locked || def.required) && def.default !== undefined) floor[def.id] = def.default;
+    }
+    setActiveFilters(floor);
     if (debounceRef.current) clearTimeout(debounceRef.current);
-    setDebouncedFilters({});
-  }, []);
+    setDebouncedFilters(floor);
+  }, [filterDefs]);
 
   const onCrossFilter = React.useCallback(
     (sourceWidgetId: string, column: string, value: FilterValue) => {

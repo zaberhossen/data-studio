@@ -15,8 +15,10 @@ import type { Dashboard, Widget } from "@/lib/types/dashboard";
 import type { PublicDashboard } from "@/lib/types/share";
 import type { ResultTable } from "@/lib/types/results";
 import { createSnapshotScheduler } from "@/lib/dashboard/snapshot-scheduler";
+import { resolveActiveTab } from "@/lib/dashboard/tabs";
 import { DashboardFilterProvider } from "./DashboardFilterContext";
 import { DashboardView } from "./DashboardView";
+import { DashboardTabs } from "./DashboardTabs";
 
 interface Payload {
   dashboard: PublicDashboard;
@@ -35,6 +37,7 @@ function toWidget(pw: PublicDashboard["widgets"][number]): Widget {
     layout: pw.layout,
     canvasLayout: pw.canvasLayout,
     kind: "query",
+    tabId: pw.tabId,
   };
 }
 
@@ -71,7 +74,7 @@ export function PublicDashboardView({ token, embed = false }: { token: string; e
   if (state.status === "error") {
     return (
       <div className="flex h-screen items-center justify-center p-6">
-        <div className="max-w-sm rounded-xl border border-dashed border-border p-8 text-center">
+        <div className="max-w-sm rounded-md border border-dashed border-border p-8 text-center">
           <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-full bg-muted">
             <LockKeyhole className="h-6 w-6 text-muted-foreground" />
           </div>
@@ -99,11 +102,17 @@ function SnapshotDashboard({ payload, embed }: { payload: Payload; embed: boolea
       elements: payload.dashboard.elements ?? [],
       layoutMode: payload.dashboard.layoutMode ?? "grid",
       canvas: payload.dashboard.canvas,
+      tabs: payload.dashboard.tabs,
       filters: [],
     }),
     [payload],
   );
   const scheduler = React.useMemo(() => createSnapshotScheduler(payload.results), [payload]);
+
+  // View-only tab selection (grid mode). Defaults to the first tab.
+  const [activeTabChoice, setActiveTabChoice] = React.useState<string | null>(null);
+  const activeTabId = resolveActiveTab(dashboard.tabs, activeTabChoice);
+  const showTabs = (dashboard.layoutMode ?? "grid") === "grid" && !!dashboard.tabs?.length;
 
   return (
     <DashboardFilterProvider filterDefs={[]}>
@@ -121,7 +130,23 @@ function SnapshotDashboard({ payload, embed }: { payload: Payload; embed: boolea
             </span>
           </header>
         )}
-        <DashboardView dashboard={dashboard} scheduler={scheduler} mode="view" />
+        {showTabs && (
+          <DashboardTabs
+            tabs={dashboard.tabs}
+            activeTabId={activeTabId}
+            editable={false}
+            onSelect={setActiveTabChoice}
+            onAdd={() => {}}
+            onRename={() => {}}
+            onRemove={() => {}}
+          />
+        )}
+        <DashboardView
+          dashboard={dashboard}
+          scheduler={scheduler}
+          mode="view"
+          activeTabId={activeTabId}
+        />
       </div>
     </DashboardFilterProvider>
   );

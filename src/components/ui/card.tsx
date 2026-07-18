@@ -1,4 +1,5 @@
-// Standard shadcn/ui Card primitive (trimmed to the parts we use).
+// Card primitive — Supabase panel styling: small radius, 1px border,
+// shadowless. Density comes from p-5 sections (Studio panels are compact).
 import * as React from "react";
 import { cn } from "@/lib/utils";
 
@@ -9,7 +10,7 @@ const Card = React.forwardRef<
   <div
     ref={ref}
     className={cn(
-      "rounded-xl border bg-card text-card-foreground shadow",
+      "rounded-md border bg-card text-card-foreground",
       className,
     )}
     {...props}

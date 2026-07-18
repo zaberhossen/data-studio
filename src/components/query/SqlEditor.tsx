@@ -45,6 +45,12 @@ import type { Field } from "@/lib/query/schema";
 interface SqlEditorProps {
   value: string;
   onChange: (value: string) => void;
+  /**
+   * ⌘/Ctrl+Enter — run (bound above all other keymaps). When the user has a
+   * non-empty selection it is passed as `selection` (run-selection); otherwise
+   * `selection` is undefined and the whole statement should run.
+   */
+  onRun?: (selection?: string) => void;
   placeholder?: string;
   readOnly?: boolean;
   /** Active source schema — drives the SQL language's column completions. */
@@ -60,13 +66,14 @@ const theme = EditorView.theme({
     fontSize: "0.8125rem",
     color: "hsl(var(--foreground))",
     backgroundColor: "hsl(var(--card))",
-    border: "1px solid hsl(var(--input))",
-    borderRadius: "calc(var(--radius) - 2px)",
+    border: "1px solid hsl(var(--border-strong))",
+    borderRadius: "var(--radius)",
   },
+  // Match the Input control's neutral 2px focus outline.
   "&.cm-focused": {
-    outline: "none",
-    borderColor: "hsl(var(--ring))",
-    boxShadow: "0 0 0 1px hsl(var(--ring))",
+    outline: "2px solid hsl(var(--border))",
+    outlineOffset: "1px",
+    borderColor: "hsl(var(--border-stronger))",
   },
   ".cm-content": {
     fontFamily:
@@ -129,6 +136,7 @@ function schemaCompletions(schema: Field[]): Completion[] {
 export function SqlEditor({
   value,
   onChange,
+  onRun,
   placeholder = "SELECT … FROM dataset GROUP BY …",
   readOnly = false,
   schema = [],
@@ -140,6 +148,9 @@ export function SqlEditor({
   const onChangeRef = React.useRef(onChange);
   // eslint-disable-next-line react-hooks/refs -- keep a ref to the latest onChange so the once-created editor's change handler always calls the current callback without re-creating the editor
   onChangeRef.current = onChange;
+  const onRunRef = React.useRef(onRun);
+  // eslint-disable-next-line react-hooks/refs -- same latest-callback pattern as onChange
+  onRunRef.current = onRun;
 
   const [readOnlyCompartment] = React.useState(() => new Compartment());
   const [sqlCompartment] = React.useState(() => new Compartment());
@@ -174,6 +185,17 @@ export function SqlEditor({
         readOnlyCompartment.of(EditorState.readOnly.of(readOnly)),
         theme,
         keymap.of([
+          // Run binding first so Mod-Enter never falls through to insertNewline.
+          {
+            key: "Mod-Enter",
+            run: (v) => {
+              if (!onRunRef.current) return false;
+              const { from, to } = v.state.selection.main;
+              const selection = from === to ? "" : v.state.sliceDoc(from, to).trim();
+              onRunRef.current(selection || undefined);
+              return true;
+            },
+          },
           ...closeBracketsKeymap,
           ...defaultKeymap,
           ...historyKeymap,

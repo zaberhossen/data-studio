@@ -87,6 +87,16 @@ export interface WidgetViz {
   columnKey?: string;
   /** Per-series color overrides (column → CSS color); else the fixed palette order. */
   colors?: Record<string, string>;
+  /** Per-series display-name overrides (column → label) for legend/tooltip. */
+  seriesLabels?: Record<string, string>;
+  /** Draw value labels on marks (bar/line/area/combo). */
+  dataLabels?: boolean;
+  /** Horizontal reference line on cartesian charts (goal/threshold). */
+  refLineValue?: number;
+  refLineLabel?: string;
+  /** Y-axis domain overrides (linear scale only; omitted → auto). */
+  yMin?: number;
+  yMax?: number;
   /** Legend placement; "none" hides it (single-series charts need no legend). */
   legend?: "top" | "bottom" | "right" | "none";
   /** Axis titles. */

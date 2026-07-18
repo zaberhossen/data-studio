@@ -9,8 +9,13 @@
  *
  * Three source classes are unified behind one list + `activate`:
  *   • Demo      — the built-in 200k mock dataset (client-generated → engine.load)
- *   • File      — a client-side upload (bytes → engine.loadFile)
+ *   • File      — a client-side upload (bytes → engine.loadFile), persisted to
+ *                 IndexedDB (`@/lib/sources/local-store`) so refresh keeps it
  *   • Server    — Postgres/etc. behind /api/datasources (engine.loadFromSource)
+ *
+ * Boot continuity: file sources + the last-active source id are rehydrated on
+ * mount; once the engine is ready the saved source is re-activated (falling
+ * back to the demo). This hook is the single owner of auto-activation.
  */
 
 import * as React from "react";
@@ -27,6 +32,11 @@ import { applyFieldOverrides, fieldsFromColumns, type Field, type FieldOverride 
 import { SALES_FIELDS } from "@/lib/data/sales-schema";
 import { generateSalesData } from "@/lib/data/mock-source";
 import { getFieldOverridesStore } from "@/lib/fields/overrides-store";
+import {
+  getLocalSourcesStore,
+  readActiveSourceId,
+  writeActiveSourceId,
+} from "@/lib/sources/local-store";
 
 /** UI field → engine column (for the demo's known schema on the `rows` spec). */
 function fieldToColumn(f: Field): SqlColumn {
@@ -112,12 +122,17 @@ export function useDataSources(engine: AnalyticsEngine): DataSourcesApi {
   const [listLoading, setListLoading] = React.useState(false);
   const [listError, setListError] = React.useState<string | null>(null);
 
+  const localStore = React.useMemo(() => getLocalSourcesStore(), []);
   const overridesStore = React.useMemo(() => getFieldOverridesStore(), []);
   const [overridesById, setOverridesById] = React.useState<Record<string, Record<string, FieldOverride>>>({});
   const loadedOverrideIds = React.useRef<Set<string>>(new Set());
 
   // File handles live in a ref (handles, not rows — never raw data in state).
   const fileHandles = React.useRef<Map<string, File>>(new Map());
+
+  // Boot gates for restore: file sources hydrated + server list fetched once.
+  const [hydrated, setHydrated] = React.useState(false);
+  const [listLoaded, setListLoaded] = React.useState(false);
 
   const patchLive = React.useCallback((id: string, next: Partial<LiveState>) => {
     setLive((prev) => ({ ...prev, [id]: { ...prev[id], ...next } as LiveState }));
@@ -134,6 +149,7 @@ export function useDataSources(engine: AnalyticsEngine): DataSourcesApi {
       setListError(err instanceof Error ? err.message : "Failed to load sources.");
     } finally {
       setListLoading(false);
+      setListLoaded(true);
     }
   }, []);
 
@@ -142,9 +158,36 @@ export function useDataSources(engine: AnalyticsEngine): DataSourcesApi {
     void refreshList();
   }, [refreshList]);
 
+  // Rehydrate persisted file sources (IndexedDB) into the ref + list on mount.
+  React.useEffect(() => {
+    let cancelled = false;
+    void localStore
+      .list()
+      .then((records) => {
+        if (cancelled || records.length === 0) return;
+        for (const r of records) fileHandles.current.set(r.id, r.file);
+        setLocalSources(
+          records.map((r) => ({
+            id: r.id,
+            name: r.name,
+            kind: "file" as const,
+            status: "idle" as const,
+            local: true,
+          })),
+        );
+      })
+      .finally(() => {
+        if (!cancelled) setHydrated(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [localStore]);
+
   const activate = React.useCallback(
     async (id: string) => {
       setActiveId(id);
+      writeActiveSourceId(id);
       patchLive(id, { status: "connecting", error: undefined });
       try {
         if (id === DEMO_SOURCE_ID) {
@@ -184,6 +227,23 @@ export function useDataSources(engine: AnalyticsEngine): DataSourcesApi {
   const refreshActive = React.useCallback(async () => {
     if (activeId) await activate(activeId);
   }, [activeId, activate]);
+
+  // Boot restore — the single owner of auto-activation: once the engine is
+  // ready and both hydration gates have passed, re-activate the saved source
+  // (demo fallback). Runs at most once; user activation later wins regardless.
+  const restoredRef = React.useRef(false);
+  React.useEffect(() => {
+    if (restoredRef.current || activeId !== null) return;
+    if (!engine.ready || !hydrated || !listLoaded) return;
+    restoredRef.current = true;
+    const saved = readActiveSourceId();
+    const known =
+      saved !== null &&
+      (saved === DEMO_SOURCE_ID ||
+        fileHandles.current.has(saved) ||
+        serverSources.some((s) => s.id === saved));
+    void activate(known ? (saved as string) : DEMO_SOURCE_ID);
+  }, [engine.ready, hydrated, listLoaded, activeId, serverSources, activate]);
 
   // Load the active source's overrides once (cached thereafter); layered onto
   // `activeFields` below so QueryBuilder/SqlEditor see them automatically.
@@ -256,9 +316,12 @@ export function useDataSources(engine: AnalyticsEngine): DataSourcesApi {
         ...prev,
         { id, name: file.name, kind: "file", status: "idle", local: true },
       ]);
+      // Write-through so the source survives a refresh (best-effort — an
+      // IndexedDB failure must not block the in-session upload).
+      void localStore.put({ id, name: file.name, file, addedAt: Date.now() }).catch(() => {});
       await activate(id);
     },
-    [activate],
+    [activate, localStore],
   );
 
   const removeSource = React.useCallback(
@@ -268,6 +331,7 @@ export function useDataSources(engine: AnalyticsEngine): DataSourcesApi {
       if (fileHandles.current.has(id)) {
         fileHandles.current.delete(id);
         setLocalSources((prev) => prev.filter((s) => s.id !== id));
+        void localStore.remove(id).catch(() => {});
       } else {
         const res = await fetch(`/api/datasources/${encodeURIComponent(id)}`, {
           method: "DELETE",
@@ -295,9 +359,12 @@ export function useDataSources(engine: AnalyticsEngine): DataSourcesApi {
       });
       loadedOverrideIds.current.delete(id);
       void overridesStore.clear(id);
-      if (activeId === id) setActiveId(null);
+      if (activeId === id) {
+        setActiveId(null);
+        writeActiveSourceId(null);
+      }
     },
-    [activeId, overridesStore],
+    [activeId, localStore, overridesStore],
   );
 
   const testSource = React.useCallback(

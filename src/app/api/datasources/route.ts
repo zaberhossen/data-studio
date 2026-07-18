@@ -14,6 +14,7 @@ import type { CreateDataSourceInput } from "@/lib/types/datasource";
 import { getStore } from "@/lib/server/datasource-store";
 import { resolveAuth } from "@/lib/auth/api";
 import { assertCanWrite } from "@/lib/db/scope";
+import { mutationRateLimit } from "@/lib/server/api-helpers";
 
 // Connectors use Node APIs (net/tls via pg) — force the Node.js runtime.
 export const runtime = "nodejs";
@@ -30,6 +31,8 @@ export async function GET() {
 export async function POST(request: Request) {
   const auth = await resolveAuth();
   if ("error" in auth) return auth.error;
+  const limited = mutationRateLimit(auth.ctx);
+  if (limited) return limited;
 
   try {
     assertCanWrite(auth.ctx);

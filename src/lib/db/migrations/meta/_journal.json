@@ -22,6 +22,20 @@
       "when": 1783610880497,
       "tag": "0002_smart_terrax",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1783999585403,
+      "tag": "0003_lumpy_lucky_pierre",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1784290084607,
+      "tag": "0004_sharp_lionheart",
+      "breakpoints": true
     }
   ]
 }

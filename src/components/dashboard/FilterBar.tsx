@@ -18,7 +18,7 @@
  */
 
 import * as React from "react";
-import { X, Filter } from "lucide-react";
+import { X, Filter, Lock } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
@@ -125,6 +125,18 @@ interface FilterControlProps {
 function FilterControl({ filter, value, onChange, onClear }: FilterControlProps) {
   const isActive = value !== undefined && value !== "" &&
     !(Array.isArray(value) && (value as unknown[]).length === 0);
+  const missing = !!filter.required && !isActive;
+
+  // Locked: author-pinned. Render the value read-only (never editable here).
+  if (filter.locked) {
+    return (
+      <div className="flex items-center gap-1 rounded-md border border-border bg-muted/40 px-2 py-1">
+        <Lock className="h-3 w-3 text-muted-foreground" />
+        <span className="text-xs font-medium text-muted-foreground">{filter.label}:</span>
+        <span className="text-xs">{isActive ? displayValue(value) : "—"}</span>
+      </div>
+    );
+  }
 
   return (
     <div className="flex items-center gap-1">
@@ -132,10 +144,12 @@ function FilterControl({ filter, value, onChange, onClear }: FilterControlProps)
         className={cn(
           "flex items-center gap-1 rounded-md border border-border bg-background px-2 py-1",
           isActive && "border-primary/50 bg-primary/5",
+          missing && "border-destructive/60 bg-destructive/5",
         )}
       >
         <span className="text-xs font-medium text-muted-foreground">
-          {filter.label}:
+          {filter.label}
+          {filter.required && <span className="ml-0.5 text-destructive" title="Required">*</span>}:
         </span>
 
         {filter.kind === "date-range" && (
@@ -170,7 +184,8 @@ function FilterControl({ filter, value, onChange, onClear }: FilterControlProps)
         )}
       </div>
 
-      {isActive && (
+      {/* Required filters can't be cleared to empty (clear resets to default). */}
+      {isActive && !filter.required && (
         <button
           type="button"
           className="flex h-5 w-5 items-center justify-center rounded-full text-muted-foreground hover:bg-muted hover:text-foreground"
@@ -182,6 +197,13 @@ function FilterControl({ filter, value, onChange, onClear }: FilterControlProps)
       )}
     </div>
   );
+}
+
+/** Human-readable rendering of a filter value (locked read-only display). */
+function displayValue(value: FilterValue | undefined): string {
+  if (value === undefined) return "—";
+  if (Array.isArray(value)) return (value as unknown[]).join(", ");
+  return String(value);
 }
 
 // ── Individual input controls ─────────────────────────────────────────────────

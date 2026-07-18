@@ -17,7 +17,9 @@ import { LayoutDashboard, Plus } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import type {
+  CanvasConfig,
   CanvasElement,
+  CanvasFrame,
   CanvasLayout,
   Dashboard,
   ElementContent,
@@ -25,6 +27,7 @@ import type {
   WidgetLayout,
 } from "@/lib/types/dashboard";
 import type { QueryScheduler } from "@/hooks/useQueryScheduler";
+import { itemsOnTab, resolveActiveTab } from "@/lib/dashboard/tabs";
 import { DashboardGrid } from "./DashboardGrid";
 import { DashboardCanvasLazy } from "./canvas/DashboardCanvasLazy";
 
@@ -42,6 +45,18 @@ interface DashboardViewProps {
   onAddElement?: (kind: CanvasElement["kind"]) => void;
   onUpdateElement?: (id: string, patch: { canvasLayout?: CanvasLayout; content?: ElementContent }) => void;
   onRemoveElement?: (id: string) => void;
+  onDuplicateElement?: (id: string) => void;
+  onAddFrame?: () => void;
+  onUpdateFrame?: (id: string, patch: Partial<Omit<CanvasFrame, "id">>) => void;
+  onRemoveFrame?: (id: string) => void;
+  onUpdateCanvas?: (patch: Partial<Omit<CanvasConfig, "frames">>) => void;
+  onUpdateWidget?: (id: string, patch: Partial<Omit<Widget, "id">>) => void;
+  onSetItemFlags?: (id: string, patch: { locked?: boolean; hidden?: boolean }) => void;
+  onPasteItems?: (payload: { widgets: Widget[]; elements: CanvasElement[] }) => string[];
+  onGroup?: (ids: string[]) => string | null;
+  onUngroup?: (ids: string[]) => void;
+  /** Active Page-view tab (grid mode only); null/undefined → show all. */
+  activeTabId?: string | null;
   /** Empty-state "add widget" affordance (authed only). */
   onAddWidget?: () => void;
 }
@@ -58,11 +73,36 @@ export function DashboardView({
   onAddElement = NOOP,
   onUpdateElement = NOOP,
   onRemoveElement = NOOP,
+  onDuplicateElement,
+  onAddFrame,
+  onUpdateFrame,
+  onRemoveFrame,
+  onUpdateCanvas,
+  onUpdateWidget,
+  onSetItemFlags,
+  onPasteItems,
+  onGroup,
+  onUngroup,
+  activeTabId,
   onAddWidget,
 }: DashboardViewProps) {
   const layoutMode = dashboard.layoutMode ?? "grid";
   const editable = mode === "edit";
-  const isEmpty = dashboard.widgets.length === 0;
+  // Grid (Page) mode partitions by tab; canvas is one surface (tabs ignored).
+  // Resolve to a valid tab (first when none chosen) so a caller that doesn't
+  // track selection — e.g. the public view — never overlaps every tab at once.
+  const effectiveTab =
+    layoutMode === "grid" ? resolveActiveTab(dashboard.tabs, activeTabId ?? null) : null;
+  const gridWidgets =
+    layoutMode === "grid"
+      ? itemsOnTab(dashboard.widgets, dashboard.tabs, effectiveTab)
+      : dashboard.widgets;
+  const gridElements =
+    layoutMode === "grid"
+      ? itemsOnTab(dashboard.elements ?? [], dashboard.tabs, effectiveTab)
+      : dashboard.elements ?? [];
+  const hasGridTextCards = gridElements.some((e) => e.kind === "text" && e.layout);
+  const isEmpty = gridWidgets.length === 0 && !hasGridTextCards;
   const showEmptyState = layoutMode === "grid" && isEmpty;
 
   if (layoutMode === "canvas") {
@@ -76,9 +116,19 @@ export function DashboardView({
           onAddElement={onAddElement}
           onUpdateElement={onUpdateElement}
           onRemoveElement={onRemoveElement}
+          onDuplicateElement={onDuplicateElement}
+          onAddFrame={onAddFrame}
+          onUpdateFrame={onUpdateFrame}
+          onRemoveFrame={onRemoveFrame}
+          onUpdateCanvas={onUpdateCanvas}
           onEditWidget={onEditWidget}
+          onUpdateWidget={onUpdateWidget}
           onDuplicateWidget={onDuplicateWidget}
           onRemoveWidget={onRemoveWidget}
+          onSetItemFlags={onSetItemFlags}
+          onPasteItems={onPasteItems}
+          onGroup={onGroup}
+          onUngroup={onUngroup}
         />
       </div>
     );
@@ -90,13 +140,16 @@ export function DashboardView({
         <EmptyDashboard onAdd={onAddWidget} />
       ) : (
         <DashboardGrid
-          widgets={dashboard.widgets}
+          widgets={gridWidgets}
+          elements={gridElements}
           scheduler={scheduler}
           editable={editable}
           onLayoutChange={onLayoutChange}
           onEditWidget={onEditWidget}
           onDuplicateWidget={onDuplicateWidget}
           onRemoveWidget={onRemoveWidget}
+          onUpdateElement={onUpdateElement}
+          onRemoveElement={onRemoveElement}
         />
       )}
     </div>
@@ -105,7 +158,7 @@ export function DashboardView({
 
 function EmptyDashboard({ onAdd }: { onAdd?: () => void }) {
   return (
-    <div className="max-w-sm rounded-xl border border-dashed border-border p-8 text-center">
+    <div className="max-w-sm rounded-md border border-dashed border-border p-8 text-center">
       <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-full bg-muted">
         <LayoutDashboard className="h-6 w-6 text-muted-foreground" />
       </div>

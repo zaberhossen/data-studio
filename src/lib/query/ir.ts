@@ -49,10 +49,22 @@ export type TemporalUnit =
 
 // ── Dimensions + aggregations ────────────────────────────────────────────────
 
+/**
+ * Numeric binning for a dimension — groups a numeric field into fixed-width
+ * ranges; the group value is the bin's lower edge (`floor(x/width)*width`).
+ * Mutually exclusive with `temporal`.
+ */
+export interface NumericBin {
+  /** Bin width (> 0). */
+  width: number;
+}
+
 export interface Dimension {
   field: FieldRef;
   /** Bucket a date/timestamp field (day/week/month/…). */
   temporal?: TemporalUnit;
+  /** Bin a numeric field into fixed-width ranges. Exclusive with `temporal`. */
+  bin?: NumericBin;
   /** Output column alias; defaults derived from the field. */
   alias?: string;
 }
@@ -65,15 +77,23 @@ export type AggFn =
   | "min"
   | "max"
   | "median"
-  | "stddev";
+  | "stddev"
+  | "variance"
+  | "percentile"
+  | "count_if"
+  | "sum_if";
 
 export interface Aggregation {
   fn: AggFn;
-  /** Omitted for `count` (→ COUNT(*)). */
+  /** Omitted for `count`/`count_if` (→ COUNT(*) forms). */
   field?: FieldRef;
   alias?: string;
   /** COUNT(DISTINCT …) etc. (also implied by `count_distinct`). */
   distinct?: boolean;
+  /** Percentile fraction in (0,1) — required for `percentile`. */
+  p?: number;
+  /** Conditional predicate — required for `count_if` / `sum_if`. */
+  filter?: Filter;
 }
 
 // ── Calculated fields (closed expression algebra) ────────────────────────────
@@ -174,11 +194,33 @@ export interface OrderBy {
 
 // ── The query ────────────────────────────────────────────────────────────────
 
+/**
+ * A query's FROM target. Either a physical `table` or a nested `query` (a
+ * MULTI-STAGE query: the inner query is compiled as a subquery, and the outer
+ * stage references its OUTPUT columns). Nested queries run LOCAL only.
+ */
+export type QuerySource =
+  | { table: string; alias?: string }
+  | { query: QueryIR; alias?: string };
+
+/** Narrow a source to its nested-query variant. */
+export function isQuerySource(
+  s: QuerySource,
+): s is { query: QueryIR; alias?: string } {
+  return "query" in s;
+}
+
 export interface QueryIR {
   version: 2;
-  source: { table: string; alias?: string };
+  source: QuerySource;
   joins?: Join[];
   calculated?: CalculatedField[];
+  /**
+   * Raw-mode column selection (unaggregated listings only): the columns the
+   * SELECT list keeps, in order. Omitted/empty ⇒ `SELECT *`. Ignored when the
+   * query aggregates (dimensions/aggregations define the output there).
+   */
+  fields?: FieldRef[];
   filters?: Filter;
   /** GROUP BY set. Empty + no aggregations ⇒ a raw row listing. */
   dimensions?: Dimension[];

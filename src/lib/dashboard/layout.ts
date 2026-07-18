@@ -7,7 +7,7 @@
  * hook uses, without duplicating the geometry.
  */
 
-import type { Widget, WidgetLayout, WidgetViz } from "@/lib/types/dashboard";
+import type { WidgetLayout, WidgetViz } from "@/lib/types/dashboard";
 
 /** Grid width in columns (matches the grid's `lg` breakpoint). */
 export const GRID_COLS = 12;
@@ -24,12 +24,13 @@ export function defaultSize(viz: WidgetViz["type"]): { w: number; h: number } {
   }
 }
 
-/** Place a new widget on a fresh row below everything else. */
+/** Place a new item on a fresh row below everything else (widgets AND any
+ *  other gridded items — pass every occupant's `{layout}`). */
 export function nextSlot(
-  widgets: Widget[],
+  items: Array<{ layout: WidgetLayout }>,
   size: { w: number; h: number },
 ): WidgetLayout {
-  const bottom = widgets.reduce(
+  const bottom = items.reduce(
     (max, w) => Math.max(max, w.layout.y + w.layout.h),
     0,
   );

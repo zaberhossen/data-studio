@@ -11,7 +11,7 @@
 import { NextResponse } from "next/server";
 import { resolveAuth } from "@/lib/auth/api";
 import { getSavedQueryDbStore } from "@/lib/server/saved-query-store";
-import { errorResponse, validateDefinition } from "@/lib/server/api-helpers";
+import { errorResponse, mutationRateLimit, validateDefinition } from "@/lib/server/api-helpers";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -26,6 +26,8 @@ export async function GET() {
 export async function POST(request: Request) {
   const auth = await resolveAuth();
   if ("error" in auth) return auth.error;
+  const limited = mutationRateLimit(auth.ctx);
+  if (limited) return limited;
 
   let body: unknown;
   try {

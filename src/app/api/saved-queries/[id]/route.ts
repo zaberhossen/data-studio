@@ -10,7 +10,7 @@ import { NextResponse } from "next/server";
 import { resolveAuth } from "@/lib/auth/api";
 import { getSavedQueryDbStore } from "@/lib/server/saved-query-store";
 import type { SavedQueryPatch } from "@/lib/saved-queries/store";
-import { errorResponse } from "@/lib/server/api-helpers";
+import { errorResponse, mutationRateLimit } from "@/lib/server/api-helpers";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -28,6 +28,8 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
   const { id } = await params;
   const auth = await resolveAuth();
   if ("error" in auth) return auth.error;
+  const limited = mutationRateLimit(auth.ctx);
+  if (limited) return limited;
 
   let patch: SavedQueryPatch;
   try {
@@ -49,6 +51,8 @@ export async function DELETE(_req: Request, { params }: { params: Promise<{ id: 
   const { id } = await params;
   const auth = await resolveAuth();
   if ("error" in auth) return auth.error;
+  const limited = mutationRateLimit(auth.ctx);
+  if (limited) return limited;
   try {
     await getSavedQueryDbStore().remove(auth.ctx, id);
     return new NextResponse(null, { status: 204 });

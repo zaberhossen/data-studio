@@ -558,6 +558,47 @@ async function handleExportCsv(
   }
 }
 
+/**
+ * EXPLORE ("GUI on SQL"): materialize a statement's FULL result (reusing the
+ * result cache when it already ran) and register it as its own dataset under
+ * `targetId`, so the IR builder can treat a SQL result like any other table.
+ * The Rust engine is NOT fed — the builder's LOCAL path executes via SQL here.
+ */
+async function handlePromote(
+  requestId: number,
+  datasetId: string,
+  sql: string,
+  targetId: string,
+): Promise<void> {
+  const unsafe = assertReadOnly(sql);
+  if (unsafe) {
+    reply({ type: "sql_error", requestId, error: unsafe });
+    return;
+  }
+  try {
+    const full = await materialize(datasetId, sql);
+    if (!conn) throw new Error("DuckDB connection unavailable");
+
+    const table = tableNameFor(targetId);
+    await conn.query(`DROP TABLE IF EXISTS "${table}"`);
+    await conn.insertArrowFromIPCStream(tableToIPC(full, "stream"), {
+      name: table,
+      create: true,
+    });
+
+    registry.set(targetId, { table, pendingIpc: null, ingested: true });
+    clearDatasetCache(targetId);
+
+    const columns: SqlColumn[] = full.schema.fields.map((f) => ({
+      name: f.name,
+      type: mapColumnType(f.type.typeId),
+    }));
+    reply({ type: "source_loaded", requestId, rowCount: full.numRows, columns });
+  } catch (err) {
+    reply({ type: "sql_error", requestId, error: toSqlError(err) });
+  }
+}
+
 async function handleSql(
   requestId: number,
   datasetId: string,
@@ -664,6 +705,21 @@ self.onmessage = async (event: MessageEvent<SqlWorkerRequest>) => {
       }
       case "export_csv": {
         await handleExportCsv(msg.requestId, msg.datasetId, msg.sql);
+        break;
+      }
+      case "promote": {
+        await handlePromote(msg.requestId, msg.datasetId, msg.sql, msg.targetId);
+        break;
+      }
+      case "cancel": {
+        // Best-effort: interrupt whatever DuckDB is executing right now. The
+        // caller already rejected its pending promise; if the interrupt lands
+        // the in-flight handler replies into a request nobody waits on.
+        try {
+          await conn?.cancelSent();
+        } catch {
+          // Nothing was running / the engine doesn't support interrupt — fine.
+        }
         break;
       }
       case "evict": {

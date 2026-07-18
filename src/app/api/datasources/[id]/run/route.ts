@@ -21,8 +21,9 @@ import { getStore } from "@/lib/server/datasource-store";
 import { ConnectorError, connectorFor } from "@/lib/server/connectors";
 import { QUERY_TIMEOUT_MS, clampLimit } from "@/lib/server/config";
 import { resolveAuth } from "@/lib/auth/api";
+import { mutationRateLimit } from "@/lib/server/api-helpers";
 import { CompileError, compileIR, dialectFor } from "@/lib/query/compile";
-import type { QueryIR } from "@/lib/query/ir";
+import { isQuerySource, type QueryIR } from "@/lib/query/ir";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -34,6 +35,9 @@ export async function POST(
   const { id } = await params;
   const auth = await resolveAuth();
   if ("error" in auth) return auth.error;
+  // Query execution can burst during interactive building — a higher ceiling.
+  const limited = mutationRateLimit(auth.ctx, 600);
+  if (limited) return limited;
   const { ctx } = auth;
 
   let body: unknown;
@@ -45,6 +49,15 @@ export async function POST(
   const ir = (body as { ir?: unknown })?.ir as QueryIR | undefined;
   if (!ir || typeof ir !== "object" || (ir as QueryIR).version !== 2) {
     return NextResponse.json({ error: "Body must be { ir: QueryIR }." }, { status: 400 });
+  }
+  // Multi-stage (nested-query source) is a LOCAL-only capability: pushdown
+  // rewrites `source` to the physical base table, which would flatten the
+  // nesting. Reject rather than silently mis-compile.
+  if (isQuerySource(ir.source)) {
+    return NextResponse.json(
+      { error: "Multi-stage queries run locally and can't be pushed down." },
+      { status: 400 },
+    );
   }
 
   const record = await getStore().get(ctx, id);

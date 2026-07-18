@@ -23,6 +23,7 @@ import {
 import {
   ArrowDown,
   ArrowUp,
+  ChevronDown,
   ChevronsLeft,
   ChevronLeft,
   ChevronRight,
@@ -70,6 +71,21 @@ interface ResultsTableProps {
   onCellClick?: (rowIndex: number, colIndex: number) => void;
   /** Optional conditional formatting: a CSS color for a cell, or null for none. */
   cellColor?: (rowIndex: number, colIndex: number, value: unknown) => string | null;
+  /**
+   * Drill-through: actions for a column header's ⌄ menu. Empty array → no menu
+   * on that column.
+   */
+  headerMenu?: (column: string) => DrillMenuItem[];
+  /**
+   * Drill-through: actions when a data cell is clicked (takes precedence over
+   * `onCellClick`). Empty array → plain cell.
+   */
+  cellMenu?: (rowIndex: number, colIndex: number) => DrillMenuItem[];
+}
+
+export interface DrillMenuItem {
+  label: string;
+  onSelect: () => void;
 }
 
 /** Each data row is a positional tuple matching `columns`. */
@@ -87,7 +103,23 @@ export function ResultsTable({
   onExportCsv,
   onCellClick,
   cellColor,
+  headerMenu,
+  cellMenu,
 }: ResultsTableProps) {
+  // One floating drill menu for headers + cells (fixed-positioned at the click).
+  const [menu, setMenu] = React.useState<{
+    x: number;
+    y: number;
+    items: DrillMenuItem[];
+  } | null>(null);
+  const openMenu = (e: React.MouseEvent, items: DrillMenuItem[]) => {
+    if (items.length === 0) return;
+    setMenu({
+      x: Math.min(e.clientX, (typeof window !== "undefined" ? window.innerWidth : 1200) - 240),
+      y: Math.min(e.clientY, (typeof window !== "undefined" ? window.innerHeight : 800) - 40 * items.length - 16),
+      items,
+    });
+  };
   const columns = React.useMemo<ColumnDef<RowTuple>[]>(
     () =>
       (table?.columns ?? []).map((col, i) => ({
@@ -121,7 +153,7 @@ export function ResultsTable({
   const colCount = Math.max(columns.length, 1);
 
   return (
-    <div className="flex h-full min-h-0 flex-col rounded-xl border border-border bg-card text-card-foreground">
+    <div className="flex h-full min-h-0 flex-col rounded-md border border-border bg-card text-card-foreground">
       {/* Capped note (non-blocking) */}
       {table?.capped && status === "data" && (
         <p className="border-b border-border bg-amber-500/10 px-3 py-1.5 text-xs text-amber-700 dark:text-amber-400">
@@ -137,8 +169,8 @@ export function ResultsTable({
         ) : status === "empty" ? (
           <EmptyState />
         ) : (
-          <Table>
-            <TableHeader className="sticky top-0 z-10 bg-card">
+          <Table className="text-xs">
+            <TableHeader className="sticky top-0 z-10 bg-surface-100">
               {rt.getHeaderGroups().map((hg) => (
                 <TableRow key={hg.id} className="hover:bg-transparent">
                   {hg.headers.map((header) => {
@@ -158,26 +190,43 @@ export function ResultsTable({
                         }
                         className={type === "number" ? "text-right" : "text-left"}
                       >
-                        <button
-                          type="button"
-                          onClick={() => cycleSort(header.column.id)}
+                        <span
                           className={cn(
-                            "inline-flex items-center gap-1 rounded px-1 -mx-1 hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+                            "group/head inline-flex items-center gap-0.5",
                             type === "number" && "flex-row-reverse",
-                            active && "text-foreground",
                           )}
                         >
-                          {flexRender(
-                            header.column.columnDef.header,
-                            header.getContext(),
+                          <button
+                            type="button"
+                            onClick={() => cycleSort(header.column.id)}
+                            className={cn(
+                              "inline-flex items-center gap-1 rounded px-1 -mx-1 hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+                              type === "number" && "flex-row-reverse",
+                              active && "text-foreground",
+                            )}
+                          >
+                            {flexRender(
+                              header.column.columnDef.header,
+                              header.getContext(),
+                            )}
+                            {active &&
+                              (sort!.dir === "asc" ? (
+                                <ArrowUp className="h-3 w-3" />
+                              ) : (
+                                <ArrowDown className="h-3 w-3" />
+                              ))}
+                          </button>
+                          {headerMenu && headerMenu(header.column.id).length > 0 && (
+                            <button
+                              type="button"
+                              onClick={(e) => openMenu(e, headerMenu(header.column.id))}
+                              aria-label={`Column actions for ${header.column.id}`}
+                              className="rounded p-0.5 text-muted-foreground/50 hover:bg-surface-300 hover:text-foreground group-hover/head:text-muted-foreground"
+                            >
+                              <ChevronDown className="h-3 w-3" />
+                            </button>
                           )}
-                          {active &&
-                            (sort!.dir === "asc" ? (
-                              <ArrowUp className="h-3 w-3" />
-                            ) : (
-                              <ArrowDown className="h-3 w-3" />
-                            ))}
-                        </button>
+                        </span>
                       </TableHead>
                     );
                   })}
@@ -208,14 +257,18 @@ export function ResultsTable({
                           <TableCell
                             key={cell.id}
                             className={cn(
+                              "font-mono",
                               alignFor(type) === "right" ? "text-right" : "text-left",
-                              onCellClick && !isNullish(value) && "cursor-pointer hover:bg-primary/5",
+                              (cellMenu || (onCellClick && !isNullish(value))) &&
+                                "cursor-pointer hover:bg-primary/5",
                             )}
                             style={cc ? { color: cc, fontWeight: 500 } : undefined}
                             onClick={
-                              onCellClick && !isNullish(value)
-                                ? () => onCellClick(rowIdx, colIdx)
-                                : undefined
+                              cellMenu
+                                ? (e) => openMenu(e, cellMenu(rowIdx, colIdx))
+                                : onCellClick && !isNullish(value)
+                                  ? () => onCellClick(rowIdx, colIdx)
+                                  : undefined
                             }
                           >
                             {isNullish(value) ? (
@@ -243,6 +296,33 @@ export function ResultsTable({
         onPageSizeChange={onPageSizeChange}
         onExportCsv={onExportCsv}
       />
+
+      {/* Floating drill menu (headers + cells) — closes on any outside click. */}
+      {menu && (
+        <>
+          <div className="fixed inset-0 z-40" onClick={() => setMenu(null)} aria-hidden />
+          <div
+            role="menu"
+            className="fixed z-50 min-w-[200px] rounded-md border border-border bg-popover p-1 text-popover-foreground shadow-md"
+            style={{ left: menu.x, top: menu.y }}
+          >
+            {menu.items.map((item, i) => (
+              <button
+                key={i}
+                type="button"
+                role="menuitem"
+                className="block w-full rounded-sm px-2 py-1.5 text-left text-xs transition-colors hover:bg-muted"
+                onClick={() => {
+                  setMenu(null);
+                  item.onSelect();
+                }}
+              >
+                {item.label}
+              </button>
+            ))}
+          </div>
+        </>
+      )}
     </div>
   );
 }

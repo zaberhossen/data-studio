@@ -11,7 +11,7 @@ import { NextResponse } from "next/server";
 import { resolveAuth } from "@/lib/auth/api";
 import { getDashboardDbStore } from "@/lib/server/dashboard-store";
 import type { Dashboard } from "@/lib/types/dashboard";
-import { errorResponse } from "@/lib/server/api-helpers";
+import { errorResponse, mutationRateLimit } from "@/lib/server/api-helpers";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -29,6 +29,9 @@ export async function PUT(request: Request, { params }: { params: Promise<{ id: 
   const { id } = await params;
   const auth = await resolveAuth();
   if ("error" in auth) return auth.error;
+  // Autosave hot path (debounced full save) — a higher ceiling avoids false trips.
+  const limited = mutationRateLimit(auth.ctx, 600);
+  if (limited) return limited;
 
   let body: Dashboard;
   try {
@@ -42,7 +45,9 @@ export async function PUT(request: Request, { params }: { params: Promise<{ id: 
 
   try {
     // The URL id is authoritative — the body can't retarget another dashboard.
-    const saved = await getDashboardDbStore().save(auth.ctx, { ...body, id });
+    // A numeric `version` engages the optimistic lock; its absence forces a save.
+    const expectedVersion = typeof body.version === "number" ? body.version : undefined;
+    const saved = await getDashboardDbStore().save(auth.ctx, { ...body, id }, expectedVersion);
     if (!saved) return NextResponse.json({ error: "Dashboard not found." }, { status: 404 });
     return NextResponse.json(saved);
   } catch (err) {
@@ -54,6 +59,8 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
   const { id } = await params;
   const auth = await resolveAuth();
   if ("error" in auth) return auth.error;
+  const limited = mutationRateLimit(auth.ctx);
+  if (limited) return limited;
 
   let name = "";
   try {
@@ -80,6 +87,8 @@ export async function DELETE(_req: Request, { params }: { params: Promise<{ id: 
   const { id } = await params;
   const auth = await resolveAuth();
   if ("error" in auth) return auth.error;
+  const limited = mutationRateLimit(auth.ctx);
+  if (limited) return limited;
   try {
     await getDashboardDbStore().remove(auth.ctx, id);
     return new NextResponse(null, { status: 204 });

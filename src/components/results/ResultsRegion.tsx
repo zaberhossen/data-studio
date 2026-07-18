@@ -16,7 +16,8 @@
  */
 
 import * as React from "react";
-import { BarChart3, Table2 } from "lucide-react";
+import { BarChart3, SlidersHorizontal, Table2 } from "lucide-react";
+import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import type { AnalyticsEngine } from "@/hooks/useAnalyticsEngine";
 import type { Query } from "@/lib/types/analytics";
@@ -31,13 +32,35 @@ import {
 } from "@/lib/types/results";
 import { downloadCsv, tableToCsv } from "@/lib/results/csv";
 import type { WidgetViz } from "@/lib/types/query";
-import { ResultsTable, type ResultsStatus } from "./ResultsTable";
+import { ResultsTable, type DrillMenuItem, type ResultsStatus } from "./ResultsTable";
 import { VizChart } from "./VizChart";
+import { ChartSettings } from "./ChartSettings";
+import { PivotTable } from "./PivotTable";
+import { singleValue } from "@/lib/viz/chart-data";
+import { makeNumberFormatter } from "@/lib/viz/format";
+import {
+  drillDistribution,
+  drillFilterEq,
+  drillSummarize,
+  drillViewRecords,
+  drillZoomIn,
+} from "@/lib/query/drill";
+import type { IrDraft } from "@/lib/query/ir-draft";
+import type { Field } from "@/lib/query/schema";
 
 /** The active query to materialize — builder Query, raw SQL, or a pushdown IR. */
 export type ResultRequest =
   | { kind: "builder"; query: Query }
-  | { kind: "sql"; sql: string }
+  | {
+      kind: "sql";
+      sql: string;
+      /** Hard cap on the result set (the editor's Limit select) — applied as an
+       *  outer `LIMIT` wrap so paging/sort/export all honor it. */
+      maxRows?: number;
+      /** Dataset to run against; defaults to the panel's resident dataset.
+       *  Set by the explore session (builder over a promoted SQL result). */
+      datasetId?: string;
+    }
   | {
       // PUSHDOWN: the IR runs on the live DB server-side; the small aggregated
       // result is ingested (once) into the worker under `datasetId`, then paged
@@ -76,9 +99,32 @@ interface ResultsRegionProps {
     elapsedMs?: number;
     error?: string;
   }) => void;
+  /**
+   * When provided, the chart tab grows a "Customize" toggle that opens the full
+   * chart editor (type picker + format panel) bound to the RESULT's columns.
+   */
+  onVizChange?: (viz: WidgetViz) => void;
+  /**
+   * Drill-through (the IR builder page): current draft + fields plus an
+   * `apply` that atomically swaps the draft and re-runs. Enables column-header
+   * menus, cell click actions, and chart click zoom/filter.
+   */
+  drill?: {
+    draft: IrDraft;
+    fields: Field[];
+    apply: (next: IrDraft) => void;
+  };
 }
 
-export function ResultsRegion({ engine, request, defaultView, viz, onResult }: ResultsRegionProps) {
+export function ResultsRegion({
+  engine,
+  request,
+  defaultView,
+  viz,
+  onResult,
+  onVizChange,
+  drill,
+}: ResultsRegionProps) {
   // Destructure the STABLE (useCallback) methods. Depending on the whole
   // `engine` object would re-fire the effect whenever `loading` toggles — an
   // infinite query loop. These references never change across renders.
@@ -104,6 +150,7 @@ export function ResultsRegion({ engine, request, defaultView, viz, onResult }: R
   const [table, setTable] = React.useState<ResultTable | null>(null);
   const [error, setError] = React.useState<string | null>(null);
   const [exporting, setExporting] = React.useState(false);
+  const [customizeOpen, setCustomizeOpen] = React.useState(false);
 
   // The full builder result (all points), kept for client-side paging + CSV.
   const builderFull = React.useRef<ResultTable | null>(null);
@@ -168,9 +215,13 @@ export function ResultsRegion({ engine, request, defaultView, viz, onResult }: R
       // SQL: always re-run (the worker slices the materialized result cheaply).
       setStatus("loading");
       setError(null);
-      const sql = sort ? applySqlSort(request.sql, sort) : request.sql;
+      const capped = request.maxRows
+        ? `SELECT * FROM (\n${request.sql.trim().replace(/;\s*$/, "")}\n) AS _q LIMIT ${request.maxRows}`
+        : request.sql;
+      const sql = sort ? applySqlSort(capped, sort) : capped;
       effectiveSql.current = sql;
-      runSql(sql, { limit: pageSize, offset: page * pageSize })
+      const opts = { limit: pageSize, offset: page * pageSize };
+      (request.datasetId ? runSqlOn(request.datasetId, sql, opts) : runSql(sql, opts))
         .then((r) => {
           if (cancelled) return;
           setTable(sqlResultToResultTable(r, page, pageSize));
@@ -224,6 +275,71 @@ export function ResultsRegion({ engine, request, defaultView, viz, onResult }: R
     // eslint-disable-next-line react-hooks/exhaustive-deps -- onResult intentionally excluded: an unmemoized parent callback would re-fire the query effect (infinite re-query); freshRequestRef already gates it to once per run
   }, [request, page, pageSize, sort, runQuery, runSql, runSqlOn, runPushdown, tableNameForId]);
 
+  // ── Drill-through menus (IR builder only) ──────────────────────────────────
+  // Plain closures over the CURRENT page — cheap to recreate per render.
+  const shortVal = (v: unknown) => {
+    const s = String(v);
+    return s.length > 24 ? `${s.slice(0, 24)}…` : s;
+  };
+
+  const headerMenu = drill
+    ? (column: string): DrillMenuItem[] => {
+        const { draft, fields, apply } = drill;
+        const items: DrillMenuItem[] = [];
+        const dist = drillDistribution(draft, fields, column);
+        if (dist) items.push({ label: "Distribution", onSelect: () => apply(dist) });
+        const sum = drillSummarize(draft, fields, column, "sum");
+        if (sum) items.push({ label: "Sum", onSelect: () => apply(sum) });
+        const avg = drillSummarize(draft, fields, column, "avg");
+        if (avg) items.push({ label: "Average", onSelect: () => apply(avg) });
+        const distinct = drillSummarize(draft, fields, column, "count_distinct");
+        if (distinct) items.push({ label: "Distinct count", onSelect: () => apply(distinct) });
+        return items;
+      }
+    : undefined;
+
+  const cellMenu =
+    drill && table
+      ? (rowIdx: number, colIdx: number): DrillMenuItem[] => {
+          const { draft, fields, apply } = drill;
+          const col = table.columns[colIdx];
+          if (!col) return [];
+          const value = table.rows[rowIdx]?.[colIdx];
+          const items: DrillMenuItem[] = [];
+          const filtered = drillFilterEq(draft, fields, col.name, value);
+          if (filtered) {
+            items.push({
+              label: value == null ? "Filter: is empty" : `Filter: = ${shortVal(value)}`,
+              onSelect: () => apply(filtered),
+            });
+          }
+          const zoomed = drillZoomIn(draft, fields, col.name, value);
+          if (zoomed) {
+            items.push({ label: "Zoom in (finer buckets)", onSelect: () => apply(zoomed) });
+          }
+          const rowCells = table.columns.map((c, i) => ({
+            column: c.name,
+            value: table.rows[rowIdx]?.[i],
+          }));
+          const records = drillViewRecords(draft, fields, rowCells);
+          if (records) {
+            items.push({ label: "View underlying records", onSelect: () => apply(records) });
+          }
+          return items;
+        }
+      : undefined;
+
+  const onCategoryClick = drill
+    ? (value: string) => {
+        const { draft, fields, apply } = drill;
+        const xName = viz?.xKey ?? table?.columns[0]?.name;
+        if (!xName) return;
+        const next =
+          drillZoomIn(draft, fields, xName, value) ?? drillFilterEq(draft, fields, xName, value);
+        if (next) apply(next);
+      }
+    : undefined;
+
   const handleSort = (next: SortSpec | null) => {
     setSort(next);
     setPage(0);
@@ -241,7 +357,10 @@ export function ResultsRegion({ engine, request, defaultView, viz, onResult }: R
         const full = builderFull.current;
         downloadCsv("results.csv", tableToCsv(full.columns, full.rows));
       } else if (request.kind === "sql") {
-        const csv = await exportSqlCsv(effectiveSql.current ?? request.sql);
+        const sql = effectiveSql.current ?? request.sql;
+        const csv = request.datasetId
+          ? await exportSqlCsvOn(request.datasetId, sql)
+          : await exportSqlCsv(sql);
         downloadCsv("results.csv", csv);
       } else if (request.kind === "pushdown") {
         const table = tableNameForId(request.datasetId);
@@ -261,7 +380,7 @@ export function ResultsRegion({ engine, request, defaultView, viz, onResult }: R
 
   if (!request) {
     return (
-      <div className="flex h-full items-center justify-center rounded-xl border border-dashed border-border p-6 text-center">
+      <div className="flex h-full items-center justify-center rounded-md border border-dashed border-border p-6 text-center">
         <div>
           <p className="text-sm font-medium">No results yet</p>
           <p className="text-xs text-muted-foreground">
@@ -294,6 +413,17 @@ export function ResultsRegion({ engine, request, defaultView, viz, onResult }: R
             Chart
           </TabsTrigger>
         </TabsList>
+        {onVizChange && view === "chart" && (
+          <Button
+            variant={customizeOpen ? "secondary" : "ghost"}
+            size="xs"
+            onClick={() => setCustomizeOpen((v) => !v)}
+            aria-pressed={customizeOpen}
+          >
+            <SlidersHorizontal className="h-3.5 w-3.5" />
+            Customize
+          </Button>
+        )}
       </div>
 
       <TabsContent value="table" className="min-h-0 flex-1">
@@ -307,19 +437,80 @@ export function ResultsRegion({ engine, request, defaultView, viz, onResult }: R
           onPageSizeChange={handlePageSize}
           onSort={handleSort}
           onExportCsv={handleExportCsv}
+          headerMenu={headerMenu}
+          cellMenu={cellMenu}
         />
       </TabsContent>
 
       <TabsContent value="chart" className="min-h-0 flex-1">
-        <div className="h-full rounded-xl border border-border bg-card p-3">
-          {/* Aggregated builder results are single-page under their LIMIT. */}
-          <VizChart
-            table={chartTable}
-            viz={viz ?? { type: "bar" }}
-          />
+        <div className="flex h-full gap-3">
+          <div className="h-full min-w-0 flex-1 rounded-md border border-border bg-card p-3">
+            {/* Aggregated builder results are single-page under their LIMIT. */}
+            <ChartArea
+              table={chartTable}
+              viz={viz ?? { type: "bar" }}
+              onCategoryClick={onCategoryClick}
+            />
+          </div>
+          {onVizChange && customizeOpen && (
+            <div className="w-80 shrink-0 overflow-auto rounded-md border border-border bg-card p-3">
+              <ChartSettings
+                viz={viz ?? { type: "bar" }}
+                table={chartTable}
+                onChange={onVizChange}
+              />
+            </div>
+          )}
         </div>
       </TabsContent>
     </Tabs>
+  );
+}
+
+/**
+ * The chart tab's render for a given viz type. Table/pivot/KPI aren't
+ * `VizChart` types — table points at the Table tab, pivot/KPI render their
+ * dedicated presentational components so every type previews live.
+ */
+function ChartArea({
+  table,
+  viz,
+  onCategoryClick,
+}: {
+  table: ResultTable | null;
+  viz: WidgetViz;
+  onCategoryClick?: (value: string) => void;
+}) {
+  if (viz.type === "table") {
+    return (
+      <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
+        Table view lives on the Table tab.
+      </div>
+    );
+  }
+  if (!table || table.rows.length === 0) {
+    return (
+      <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
+        No chartable data.
+      </div>
+    );
+  }
+  if (viz.type === "pivot") return <PivotTable table={table} viz={viz} />;
+  if (viz.type === "kpi") return <KpiPreview table={table} viz={viz} />;
+  return <VizChart table={table} viz={viz} onCategoryClick={onCategoryClick} />;
+}
+
+/** Minimal KPI preview (the dashboard widget adds goal/trend chrome). */
+function KpiPreview({ table, viz }: { table: ResultTable; viz: WidgetViz }) {
+  const fmt = makeNumberFormatter(viz.numberFormat);
+  const value = singleValue(table, viz);
+  return (
+    <div className="flex h-full flex-col items-center justify-center gap-1">
+      <span className="text-4xl font-semibold tabular-nums">
+        {value === null ? "—" : fmt(value)}
+      </span>
+      {viz.unit && <span className="text-sm text-muted-foreground">{viz.unit}</span>}
+    </div>
   );
 }
 

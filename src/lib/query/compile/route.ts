@@ -10,7 +10,7 @@
 
 import type { DataSourceKind } from "@/lib/types/datasource";
 import type { ExecutionMode } from "@/lib/types/query";
-import { isAggregated, type QueryIR } from "@/lib/query/ir";
+import { isAggregated, isQuerySource, type QueryIR } from "@/lib/query/ir";
 
 // Only real SQL databases can push down. Fetch-based sources (http-file /
 // rest-api) have no server SQL engine, so their IR always runs LOCAL (DuckDB
@@ -18,6 +18,9 @@ import { isAggregated, type QueryIR } from "@/lib/query/ir";
 const LIVE_KINDS: ReadonlySet<DataSourceKind> = new Set(["postgres", "mysql"]);
 
 export function chooseExecution(kind: DataSourceKind, ir: QueryIR): ExecutionMode {
+  // Multi-stage (nested-query source) runs LOCAL only: the pushdown /run endpoint
+  // rewrites `source` to a physical table, which would flatten the nesting.
+  if (isQuerySource(ir.source)) return "local";
   // Joins reach across tables that only exist in the live DB — they can't run
   // LOCAL over the single resident dataset, so they always push down.
   if (LIVE_KINDS.has(kind) && (isAggregated(ir) || (ir.joins?.length ?? 0) > 0)) {

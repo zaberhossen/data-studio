@@ -13,19 +13,16 @@
  *
  * Invariants (CLAUDE.md): React still never holds raw rows — the hooks below
  * only surface `{ rowCount, columns }` summaries + bounded result pages. The
- * one-time localStorage→server import gate and the demo auto-activate effect
- * (formerly in the page component) live here so every routed page fetches
- * already-migrated records against a ready engine.
+ * one-time localStorage→server import gate lives here so every routed page
+ * fetches already-migrated records against a ready engine. Source
+ * auto-activation (saved-source restore with demo fallback) is owned by
+ * `useDataSources` itself.
  */
 
 import * as React from "react";
 import { Loader2 } from "lucide-react";
 import { useAnalyticsEngine, type AnalyticsEngine } from "@/hooks/useAnalyticsEngine";
-import {
-  DEMO_SOURCE_ID,
-  useDataSources,
-  type DataSourcesApi,
-} from "@/hooks/useDataSources";
+import { useDataSources, type DataSourcesApi } from "@/hooks/useDataSources";
 import { useQueryWorkspace, type QueryWorkspace } from "@/hooks/useQueryWorkspace";
 import { importLocalDataOnce } from "@/lib/migration/import-local";
 
@@ -69,16 +66,6 @@ function Mounted({ children }: { children: React.ReactNode }) {
     : engine.ready
       ? "ready"
       : "booting";
-
-  // Activate the built-in demo once the engine is ready and nothing is loaded —
-  // gives an immediately working builder without forcing a connection step.
-  const autoStarted = React.useRef(false);
-  React.useEffect(() => {
-    if (engine.ready && !autoStarted.current && sources.activeId === null) {
-      autoStarted.current = true;
-      void sources.activate(DEMO_SOURCE_ID);
-    }
-  }, [engine.ready, sources]);
 
   const value = React.useMemo<WorkspaceContextValue>(
     () => ({ engine, sources, workspace, engineStatus }),

@@ -19,10 +19,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const [commandOpen, setCommandOpen] = React.useState(false);
 
   return (
-    <div className="flex h-screen overflow-hidden bg-background text-foreground">
-      <IconRail />
-      <div className="flex min-w-0 flex-1 flex-col">
-        <AppHeader onOpenCommand={() => setCommandOpen(true)} />
+    <div className="flex h-screen flex-col overflow-hidden bg-background text-foreground">
+      <AppHeader onOpenCommand={() => setCommandOpen(true)} />
+      <div className="flex min-h-0 flex-1">
+        <IconRail />
         <main className="min-h-0 min-w-0 flex-1 overflow-hidden">{children}</main>
       </div>
       <CommandMenu open={commandOpen} onOpenChange={setCommandOpen} />

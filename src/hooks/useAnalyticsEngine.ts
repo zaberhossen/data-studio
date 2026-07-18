@@ -119,6 +119,22 @@ export interface AnalyticsEngine {
   runQuery: (query: Query) => Promise<QueryResult>;
   /** Raw-SQL path: run read-only SQL via DuckDB; resolves a single page. */
   runSql: (sql: string, opts?: RunSqlOptions) => Promise<SqlResult>;
+  /**
+   * Cancel every in-flight raw-SQL run: their promises reject immediately with
+   * "Query cancelled." and a best-effort interrupt is posted to DuckDB. Loads,
+   * exports, and pushdown requests are untouched.
+   */
+  cancelSql: () => void;
+  /**
+   * EXPLORE: materialize `sql` against `datasetId` and register the result set
+   * as its own dataset under `targetId` (queryable via `runSqlOn(targetId, …)`).
+   * Lets the IR builder run over the RESULT of a raw SQL statement.
+   */
+  promoteSqlResult: (
+    datasetId: string,
+    sql: string,
+    targetId: string,
+  ) => Promise<SourceLoadResult>;
 
   // ── Keyed registry (dashboard: many datasets resident at once) ────────────
   /**
@@ -305,12 +321,16 @@ export function useAnalyticsEngine(): AnalyticsEngine {
     };
   }, []);
 
+  /** In-flight raw-SQL run request ids — the set `cancelSql` sweeps. */
+  const sqlRunIds = useRef<Set<number>>(new Set());
+
   /** Register a pending request and post it to a specific worker. */
   const dispatch = useCallback(
     <T,>(
       worker: Worker | null,
       build: (requestId: number) => WorkerRequest | SqlWorkerRequest,
       transfer?: Transferable[],
+      onRegister?: (requestId: number) => void,
     ) =>
       new Promise<T>((resolve, reject) => {
         if (!worker) return reject(new Error("Worker not available"));
@@ -319,6 +339,7 @@ export function useAnalyticsEngine(): AnalyticsEngine {
           resolve: resolve as (value: unknown) => void,
           reject,
         });
+        onRegister?.(requestId);
         setLoading(true);
         setError(null);
         worker.postMessage(build(requestId), transfer ?? []);
@@ -405,14 +426,51 @@ export function useAnalyticsEngine(): AnalyticsEngine {
   );
 
   const runSqlOn = useCallback(
-    (datasetId: string, sql: string, opts?: RunSqlOptions) =>
-      dispatch<SqlResult>(sqlRef.current, (requestId) => ({
-        type: "sql",
+    (datasetId: string, sql: string, opts?: RunSqlOptions) => {
+      let trackedId = 0;
+      return dispatch<SqlResult>(
+        sqlRef.current,
+        (requestId) => ({
+          type: "sql",
+          requestId,
+          datasetId,
+          sql,
+          limit: opts?.limit ?? DEFAULT_SQL_LIMIT,
+          offset: opts?.offset ?? 0,
+        }),
+        undefined,
+        (requestId) => {
+          trackedId = requestId;
+          sqlRunIds.current.add(requestId);
+        },
+      ).finally(() => sqlRunIds.current.delete(trackedId));
+    },
+    [dispatch],
+  );
+
+  /** Reject every in-flight SQL run now; nudge DuckDB to stop, best-effort. */
+  const cancelSql = useCallback(() => {
+    sqlRef.current?.postMessage({ type: "cancel" } satisfies SqlWorkerRequest);
+    const ids = [...sqlRunIds.current];
+    sqlRunIds.current.clear();
+    for (const id of ids) {
+      const req = pending.current.get(id);
+      if (req) {
+        pending.current.delete(id);
+        req.reject({ kind: "execution", message: "Query cancelled." });
+      }
+    }
+    if (pending.current.size === 0) setLoading(false);
+  }, []);
+
+  const promoteSqlResult = useCallback(
+    (datasetId: string, sql: string, targetId: string) =>
+      dispatch<SourceLoadResult>(sqlRef.current, (requestId) => ({
+        type: "promote",
         requestId,
         datasetId,
         sql,
-        limit: opts?.limit ?? DEFAULT_SQL_LIMIT,
-        offset: opts?.offset ?? 0,
+        targetId,
       })),
     [dispatch],
   );
@@ -517,6 +575,8 @@ export function useAnalyticsEngine(): AnalyticsEngine {
       loadFile,
       runQuery,
       runSql,
+      cancelSql,
+      promoteSqlResult,
       exportSqlCsv,
       ensureLoaded,
       runQueryOn,
@@ -538,6 +598,8 @@ export function useAnalyticsEngine(): AnalyticsEngine {
       loadFile,
       runQuery,
       runSql,
+      cancelSql,
+      promoteSqlResult,
       exportSqlCsv,
       ensureLoaded,
       runQueryOn,

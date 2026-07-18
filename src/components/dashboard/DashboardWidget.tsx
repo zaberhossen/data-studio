@@ -16,11 +16,17 @@
  * Effective query: the scheduler receives an ephemeral effective widget (base ⊕
  * active filters ⊕ cross-filters). The base widget is NEVER mutated. The cache
  * key is derived from the effective query, so unaffected widgets hit the cache.
+ *
+ * Viewport-lazy: a widget submits its query only once it has scrolled into (or
+ * near) the viewport — an IntersectionObserver gates the first submit, so a
+ * 40-widget dashboard doesn't fire 40 queries into the serial worker on load.
+ * A filter change while off-screen is deferred until the widget is next visible.
  */
 
 import * as React from "react";
 import {
   Copy,
+  ImageDown,
   MoreVertical,
   Pencil,
   RefreshCw,
@@ -42,6 +48,8 @@ import { makeNumberFormatter, conditionalColor } from "@/lib/viz/format";
 import type { Widget } from "@/lib/types/dashboard";
 import { widgetCacheKey } from "@/lib/dashboard/hash";
 import { buildEffectiveWidget } from "@/lib/dashboard/filters";
+import { resolveClick } from "@/lib/dashboard/click-behavior";
+import { exportNodeToPng } from "@/lib/dashboard/export";
 import {
   useWidgetResult,
   type QueryScheduler,
@@ -50,6 +58,7 @@ import {
 import { ResultsTable } from "@/components/results/ResultsTable";
 import { VizChart } from "@/components/results/VizChart";
 import { PivotTable } from "@/components/results/PivotTable";
+import { ErrorBoundary } from "@/components/ui/error-boundary";
 import { useFilterContext } from "./DashboardFilterContext";
 
 interface DashboardWidgetProps {
@@ -62,6 +71,37 @@ interface DashboardWidgetProps {
 }
 
 const NOOP = () => {};
+
+/**
+ * True once `ref` has entered (or come within `rootMargin` of) the viewport.
+ * Stays true afterward — scrolling a widget out never discards its result.
+ * Falls back to eager (true) where IntersectionObserver is unavailable (SSR/test).
+ */
+function useHasBeenVisible(
+  ref: React.RefObject<HTMLElement | null>,
+  rootMargin = "300px",
+): boolean {
+  const [seen, setSeen] = React.useState(
+    typeof IntersectionObserver === "undefined",
+  );
+  React.useEffect(() => {
+    if (seen) return;
+    const el = ref.current;
+    if (!el || typeof IntersectionObserver === "undefined") return;
+    const io = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((e) => e.isIntersecting)) {
+          setSeen(true);
+          io.disconnect();
+        }
+      },
+      { rootMargin },
+    );
+    io.observe(el);
+    return () => io.disconnect();
+  }, [ref, rootMargin, seen]);
+  return seen;
+}
 
 export function DashboardWidget({
   widget,
@@ -97,21 +137,53 @@ export function DashboardWidget({
     [widget, filterDefs, debouncedFilters, crossFilters, resultColumns],
   );
 
-  // Re-submit when the effective cache key changes (filter on/off) or on mount.
+  // Viewport gate: hold the first submit until the tile is (near) on-screen.
+  const rootRef = React.useRef<HTMLDivElement>(null);
+  const visible = useHasBeenVisible(rootRef);
+
+  // Export this tile (chart/table + header) as a PNG.
+  const [exportingPng, setExportingPng] = React.useState(false);
+  const handleExportPng = React.useCallback(async () => {
+    if (!rootRef.current) return;
+    setExportingPng(true);
+    try {
+      await exportNodeToPng(rootRef.current, widget.title);
+    } catch {
+      // Best-effort; a failed capture shouldn't break the dashboard.
+    } finally {
+      setExportingPng(false);
+    }
+  }, [widget.title]);
+
+  // Submit when visible AND (the effective cache key changed OR it just became
+  // visible). A filter change while off-screen is skipped here and picked up the
+  // moment the widget scrolls in (visible flips → this effect re-runs).
   const effectiveCacheKey = widgetCacheKey(effectiveWidget);
   React.useEffect(() => {
+    if (!visible) return;
     scheduler.submit(effectiveWidget);
     // widget.sourceId / widget.queryKind / effectiveCacheKey fully characterize
     // what should run; widget object identity changes on layout edits too.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [scheduler, widget.sourceId, widget.queryKind, effectiveCacheKey]);
+  }, [scheduler, widget.sourceId, widget.queryKind, effectiveCacheKey, visible]);
 
-  // Cross-filter emitter: widget.id is the source → loop guard in buildEffectiveWidget
-  const handleCrossFilter = React.useCallback(
+  // Data-point click dispatch: resolve the widget's click behavior (default
+  // cross-filter) into emit / open-url / navigate. widget.id is the cross-filter
+  // source → loop guard in buildEffectiveWidget. Cross-dashboard navigation uses
+  // a full load so the target list + filter provider re-seed from the URL.
+  const handleDataClick = React.useCallback(
     (column: string, value: string | number) => {
-      onCrossFilter(widget.id, column, value);
+      const action = resolveClick(widget.clickBehavior, { column, value });
+      if (!action) return;
+      if (action.kind === "cross-filter") {
+        onCrossFilter(widget.id, action.column, action.value);
+      } else if (action.kind === "open-url") {
+        window.open(action.url, action.newTab ? "_blank" : "_self", "noopener,noreferrer");
+      } else {
+        window.location.assign(action.href);
+      }
     },
-    [widget.id, onCrossFilter],
+    [widget.clickBehavior, widget.id, onCrossFilter],
   );
 
   // The group_by column for builder widgets (cross-filter x-axis label → this col).
@@ -119,23 +191,35 @@ export function DashboardWidget({
     widget.queryKind === "builder" ? (widget.query?.group_by ?? null) : null;
 
   return (
-    <div className="flex h-full min-h-0 flex-col overflow-hidden rounded-xl border border-border bg-card text-card-foreground">
+    <div
+      ref={rootRef}
+      className="flex h-full min-h-0 flex-col overflow-hidden rounded-md border border-border bg-card text-card-foreground"
+    >
       <WidgetHeader
         widget={widget}
         editable={editable}
         loading={result.status === "loading"}
+        exportingPng={exportingPng}
         onRefresh={() => scheduler.submit(effectiveWidget, true)}
+        onExportPng={handleExportPng}
         onEdit={() => onEdit(widget)}
         onDuplicate={() => onDuplicate(widget.id)}
         onRemove={() => onRemove(widget.id)}
       />
       <div className="min-h-0 flex-1 p-2">
-        <WidgetBody
-          widget={widget}
-          result={result}
-          builderGroupBy={builderGroupBy}
-          onCrossFilter={handleCrossFilter}
-        />
+        {/* A render-time throw (malformed data, bad viz config) is contained to
+            this tile; it auto-recovers when the result/viz changes. */}
+        <ErrorBoundary
+          resetKeys={[result.table, widget.viz.type, widget.id]}
+          fallback={(err, reset) => <WidgetCrash error={err} onRetry={reset} />}
+        >
+          <WidgetBody
+            widget={widget}
+            result={result}
+            builderGroupBy={builderGroupBy}
+            onDataClick={handleDataClick}
+          />
+        </ErrorBoundary>
       </div>
     </div>
   );
@@ -145,12 +229,12 @@ function WidgetBody({
   widget,
   result,
   builderGroupBy,
-  onCrossFilter,
+  onDataClick,
 }: {
   widget: Widget;
   result: WidgetResult;
   builderGroupBy: string | null;
-  onCrossFilter: (column: string, value: string | number) => void;
+  onDataClick: (column: string, value: string | number) => void;
 }) {
   if (result.status === "loading" || result.status === "idle") {
     return <WidgetSkeleton viz={widget.viz.type} />;
@@ -182,7 +266,7 @@ function WidgetBody({
     case "kpi":
       return <KpiView table={table} widget={widget} />;
     case "table":
-      return <TableView table={table} viz={widget.viz} onCrossFilter={onCrossFilter} />;
+      return <TableView table={table} viz={widget.viz} onDataClick={onDataClick} />;
     case "pivot":
       return <PivotTable table={table} viz={widget.viz} />;
     default:
@@ -190,10 +274,27 @@ function WidgetBody({
         <VizChart
           table={table}
           viz={widget.viz}
-          onCategoryClick={groupBy ? (v) => onCrossFilter(groupBy, v) : undefined}
+          onCategoryClick={groupBy ? (v) => onDataClick(groupBy, v) : undefined}
         />
       );
   }
+}
+
+/** Inline fallback when a widget's body throws during render. */
+function WidgetCrash({ error, onRetry }: { error: Error; onRetry: () => void }) {
+  return (
+    <div className="flex h-full min-h-0 items-center justify-center p-3 text-center">
+      <div className="max-w-xs">
+        <TriangleAlert className="mx-auto h-5 w-5 text-destructive" />
+        <p className="mt-1 text-xs font-medium text-destructive">Couldn&apos;t render this widget</p>
+        <p className="mt-0.5 line-clamp-3 text-[11px] text-destructive/80">{error.message}</p>
+        <Button variant="outline" size="sm" className="mt-2 h-7" onClick={onRetry}>
+          <RefreshCw className="h-3.5 w-3.5" />
+          Try again
+        </Button>
+      </div>
+    </div>
+  );
 }
 
 /**
@@ -276,11 +377,11 @@ function KpiView({ table, widget }: { table: ResultTable; widget: Widget }) {
 function TableView({
   table,
   viz,
-  onCrossFilter,
+  onDataClick,
 }: {
   table: ResultTable;
   viz: Widget["viz"];
-  onCrossFilter: (column: string, value: string | number) => void;
+  onDataClick: (column: string, value: string | number) => void;
 }) {
   const page: ResultTable = {
     ...table,
@@ -294,10 +395,10 @@ function TableView({
       const raw = table.rows[rowIndex]?.[colIndex];
       if (!col || raw == null) return;
       if (typeof raw === "string" || typeof raw === "number") {
-        onCrossFilter(col.name, raw);
+        onDataClick(col.name, raw);
       }
     },
-    [table, onCrossFilter],
+    [table, onDataClick],
   );
 
   const rules = viz.conditional;
@@ -353,7 +454,9 @@ function WidgetHeader({
   widget,
   editable,
   loading,
+  exportingPng,
   onRefresh,
+  onExportPng,
   onEdit,
   onDuplicate,
   onRemove,
@@ -361,7 +464,9 @@ function WidgetHeader({
   widget: Widget;
   editable: boolean;
   loading: boolean;
+  exportingPng: boolean;
   onRefresh: () => void;
+  onExportPng: () => void;
   onEdit: () => void;
   onDuplicate: () => void;
   onRemove: () => void;
@@ -383,7 +488,21 @@ function WidgetHeader({
         </span>
       </div>
 
-      <div className="relative flex shrink-0 items-center">
+      <div className="relative flex shrink-0 items-center" data-export-ignore>
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon"
+          className="h-7 w-7"
+          aria-label="Download PNG"
+          title="Download PNG"
+          disabled={exportingPng}
+          onMouseDown={(e) => e.stopPropagation()}
+          onClick={onExportPng}
+        >
+          <ImageDown className={cn("h-3.5 w-3.5", exportingPng && "animate-pulse")} />
+        </Button>
+
         <Button
           type="button"
           variant="ghost"

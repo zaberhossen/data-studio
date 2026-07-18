@@ -35,6 +35,7 @@ import type {
   CanvasConfig,
   CanvasLayout,
   DashboardFilter,
+  DashboardTab,
   ElementContent,
   WidgetLayout,
 } from "@/lib/types/dashboard";
@@ -250,6 +251,10 @@ export const dashboards = pgTable(
     /** { width, height, background } when layoutMode = canvas. */
     canvas: jsonb("canvas").$type<CanvasConfig>(),
     filters: jsonb("filters").$type<DashboardFilter[]>(),
+    /** Page-view tabs ([{id,name}]); absent/empty = a single untabbed page. */
+    tabs: jsonb("tabs").$type<DashboardTab[]>(),
+    /** Optimistic-lock counter: bumped on every save; a stale save is rejected. */
+    version: integer("version").notNull().default(1),
     createdBy: text("created_by").references(() => users.id, { onDelete: "set null" }),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
@@ -280,6 +285,8 @@ export const widgets = pgTable(
     content: jsonb("content").$type<ElementContent>(),
     gridLayout: jsonb("grid_layout").$type<WidgetLayout>(),
     canvasLayout: jsonb("canvas_layout").$type<CanvasLayout>(),
+    /** Page-view tab this item belongs to (null → the first tab). */
+    tabId: text("tab_id"),
     sort: integer("sort").notNull().default(0),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),

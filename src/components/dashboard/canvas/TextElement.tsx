@@ -9,6 +9,7 @@
 
 import * as React from "react";
 import type { TextContent } from "@/lib/types/dashboard";
+import { renderMarkdown } from "@/lib/dashboard/markdown";
 
 interface Props {
   content: TextContent;
@@ -61,6 +62,20 @@ export function TextElement({ content, editable, onChange }: Props) {
         className="h-full w-full resize-none border-0 bg-transparent p-1 outline-none focus:ring-1 focus:ring-ring"
         style={style}
       />
+    );
+  }
+
+  // Markdown mode renders parsed nodes; `whitespace-pre-wrap` is dropped so list
+  // / heading block spacing applies. Plain mode preserves literal whitespace.
+  if (content.markdown && content.text) {
+    return (
+      <div
+        className="h-full w-full overflow-auto break-words p-1"
+        style={style}
+        onDoubleClick={editable ? () => setEditing(true) : undefined}
+      >
+        {renderMarkdown(content.text)}
+      </div>
     );
   }
 

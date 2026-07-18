@@ -11,7 +11,7 @@
  * verbatim; it neither knows nor touches the engines.
  */
 
-import type { Dashboard } from "@/lib/types/dashboard";
+import type { Dashboard, LayoutMode } from "@/lib/types/dashboard";
 import { emptyDashboard } from "@/lib/types/dashboard";
 
 /**
@@ -21,14 +21,31 @@ import { emptyDashboard } from "@/lib/types/dashboard";
  */
 export const DEFAULT_DASHBOARD_ID = "default";
 
+/** Thrown by `save` on an optimistic-lock conflict (409) — a stale write. */
+export class DashboardConflictError extends Error {
+  constructor(message = "This dashboard was changed elsewhere.") {
+    super(message);
+    this.name = "DashboardConflictError";
+  }
+}
+
+export interface SaveOptions {
+  /** Skip the optimistic-lock check (last-write-wins) — the "overwrite" path. */
+  force?: boolean;
+}
+
 export interface DashboardStore {
-  /** Summaries for a picker (id + name only — cheap to list). */
-  list(): Promise<Array<Pick<Dashboard, "id" | "name" | "updatedAt">>>;
+  /** Summaries for a picker (id + name + type — cheap to list). */
+  list(): Promise<Array<Pick<Dashboard, "id" | "name" | "updatedAt" | "layoutMode">>>;
   get(id: string): Promise<Dashboard | null>;
-  /** Create a new (empty) dashboard; returns it with a store-assigned id. */
-  create(name?: string): Promise<Dashboard>;
-  /** Overwrite an existing dashboard; returns it (with `updatedAt` set). */
-  save(dashboard: Dashboard): Promise<Dashboard>;
+  /** Create a new (empty) dashboard of the given type ("grid" = Page view). */
+  create(name?: string, layoutMode?: LayoutMode): Promise<Dashboard>;
+  /**
+   * Overwrite an existing dashboard; returns it (with `updatedAt` + `version`
+   * set). Throws `DashboardConflictError` if the server version advanced and
+   * `opts.force` isn't set.
+   */
+  save(dashboard: Dashboard, opts?: SaveOptions): Promise<Dashboard>;
   remove(id: string): Promise<void>;
 }
 
@@ -44,7 +61,7 @@ function nextDashboardId(): string {
 const STORAGE_PREFIX = "data-studio:dashboard:";
 const INDEX_KEY = "data-studio:dashboards";
 
-type IndexEntry = { id: string; name: string; updatedAt?: number };
+type IndexEntry = { id: string; name: string; updatedAt?: number; layoutMode?: LayoutMode };
 
 /**
  * Browser `localStorage` implementation. Each dashboard is one key
@@ -89,19 +106,29 @@ export class LocalDashboardStore implements DashboardStore {
     }
   }
 
-  async create(name = "Untitled dashboard"): Promise<Dashboard> {
-    return this.save(emptyDashboard(nextDashboardId(), name));
+  async create(name = "Untitled dashboard", layoutMode: LayoutMode = "grid"): Promise<Dashboard> {
+    return this.save(emptyDashboard(nextDashboardId(), name, layoutMode));
   }
 
   async save(dashboard: Dashboard): Promise<Dashboard> {
-    const saved: Dashboard = { ...dashboard, updatedAt: Date.now() };
+    // Single-user localStorage has no concurrency; just carry the version.
+    const saved: Dashboard = {
+      ...dashboard,
+      updatedAt: Date.now(),
+      version: (dashboard.version ?? 0) + 1,
+    };
     if (this.hasStorage()) {
       window.localStorage.setItem(
         STORAGE_PREFIX + saved.id,
         JSON.stringify(saved),
       );
       const index = this.readIndex().filter((e) => e.id !== saved.id);
-      index.push({ id: saved.id, name: saved.name, updatedAt: saved.updatedAt });
+      index.push({
+        id: saved.id,
+        name: saved.name,
+        updatedAt: saved.updatedAt,
+        layoutMode: saved.layoutMode ?? "grid",
+      });
       this.writeIndex(index);
     }
     return saved;
@@ -120,10 +147,12 @@ export class LocalDashboardStore implements DashboardStore {
  * read; the browser holds no dashboards. Org-scoped + auth'd server-side.
  */
 export class ApiDashboardStore implements DashboardStore {
-  async list(): Promise<Array<Pick<Dashboard, "id" | "name" | "updatedAt">>> {
+  async list(): Promise<Array<Pick<Dashboard, "id" | "name" | "updatedAt" | "layoutMode">>> {
     const res = await fetch("/api/dashboards");
     if (!res.ok) throw new Error(await errText(res, "Failed to load dashboards."));
-    return (await res.json()) as Array<Pick<Dashboard, "id" | "name" | "updatedAt">>;
+    return (await res.json()) as Array<
+      Pick<Dashboard, "id" | "name" | "updatedAt" | "layoutMode">
+    >;
   }
 
   async get(id: string): Promise<Dashboard | null> {
@@ -133,22 +162,27 @@ export class ApiDashboardStore implements DashboardStore {
     return (await res.json()) as Dashboard;
   }
 
-  async create(name = "Untitled dashboard"): Promise<Dashboard> {
+  async create(name = "Untitled dashboard", layoutMode: LayoutMode = "grid"): Promise<Dashboard> {
     const res = await fetch("/api/dashboards", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name }),
+      body: JSON.stringify({ name, layoutMode }),
     });
     if (!res.ok) throw new Error(await errText(res, "Failed to create the dashboard."));
     return (await res.json()) as Dashboard;
   }
 
-  async save(dashboard: Dashboard): Promise<Dashboard> {
+  async save(dashboard: Dashboard, opts?: SaveOptions): Promise<Dashboard> {
+    // Force = drop the version so the server skips the optimistic-lock guard.
+    const payload = opts?.force ? { ...dashboard, version: undefined } : dashboard;
     const res = await fetch(`/api/dashboards/${encodeURIComponent(dashboard.id)}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(dashboard),
+      body: JSON.stringify(payload),
     });
+    if (res.status === 409) {
+      throw new DashboardConflictError(await errText(res, "This dashboard was changed elsewhere."));
+    }
     if (!res.ok) throw new Error(await errText(res, "Failed to save the dashboard."));
     return (await res.json()) as Dashboard;
   }

@@ -8,8 +8,12 @@ const badgeVariants = cva(
   {
     variants: {
       variant: {
-        default: "border-transparent bg-primary text-primary-foreground",
+        // Supabase badges are tinted surfaces + colored text, never solid fills.
+        default:
+          "border-brand/25 bg-brand/15 text-brand-600 dark:border-brand/30 dark:bg-brand/20 dark:text-brand-400",
         secondary: "border-transparent bg-secondary text-secondary-foreground",
+        destructive:
+          "border-destructive/25 bg-destructive/10 text-destructive dark:border-destructive/40 dark:bg-destructive/25 dark:text-red-400",
         outline: "text-foreground",
         muted:
           "border-transparent bg-muted text-muted-foreground",

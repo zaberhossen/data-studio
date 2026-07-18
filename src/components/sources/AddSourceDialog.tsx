@@ -384,7 +384,7 @@ function FileDropZone({
       onDrop={onDrop}
       disabled={submitting}
       className={
-        "flex w-full flex-col items-center justify-center gap-2 rounded-xl border-2 border-dashed p-8 text-center transition-colors " +
+        "flex w-full flex-col items-center justify-center gap-2 rounded-md border-2 border-dashed p-8 text-center transition-colors " +
         (dragActive
           ? "border-primary bg-primary/5"
           : "border-border hover:border-primary/50 hover:bg-accent")

@@ -8,8 +8,9 @@ export default defineConfig({
     },
   },
   test: {
-    // Pure-logic unit tests (adapters). jsdom isn't needed here.
+    // Pure-logic unit tests (adapters). jsdom isn't needed here; the few .tsx
+    // suites render to static markup via react-dom/server (no DOM required).
     environment: "node",
-    include: ["src/**/*.test.ts"],
+    include: ["src/**/*.test.{ts,tsx}"],
   },
 });
