@@ -12,14 +12,17 @@
 import * as React from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { useSession } from "next-auth/react";
 import {
   Database,
   LayoutDashboard,
   ScrollText,
   Settings,
+  ShieldCheck,
   Save,
   Table2,
   Terminal,
+  Users,
   Home,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -29,6 +32,8 @@ interface NavItem {
   href: string;
   label: string;
   icon: React.ComponentType<{ className?: string }>;
+  /** When true, only rendered for org owners/admins. */
+  adminOnly?: boolean;
 }
 
 export const NAV: NavItem[] = [
@@ -39,6 +44,8 @@ export const NAV: NavItem[] = [
   { href: "/saved", label: "Saved queries", icon: Save },
   { href: "/logs", label: "Logs", icon: ScrollText },
   { href: "/dashboards", label: "Dashboards", icon: LayoutDashboard },
+  { href: "/members", label: "Members", icon: Users, adminOnly: true },
+  { href: "/audit", label: "Audit log", icon: ShieldCheck, adminOnly: true },
 ];
 
 /** Active when the path equals the href, or (for non-root hrefs) is nested under it. */
@@ -49,6 +56,10 @@ function isActive(pathname: string, href: string): boolean {
 
 export function IconRail() {
   const pathname = usePathname() ?? "/";
+  const { data: session } = useSession();
+  const role = session?.user?.role ?? null;
+  const isAdmin = role === "owner" || role === "admin";
+  const items = NAV.filter((item) => !item.adminOnly || isAdmin);
 
   return (
     <nav
@@ -56,7 +67,7 @@ export function IconRail() {
       className="flex h-full w-14 shrink-0 flex-col items-center gap-1 border-r border-border bg-card py-2"
     >
       <ul className="flex flex-1 flex-col items-center gap-1 pt-1">
-        {NAV.map((item) => {
+        {items.map((item) => {
           const Icon = item.icon;
           const active = isActive(pathname, item.href);
           return (

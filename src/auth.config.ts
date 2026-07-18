@@ -10,7 +10,7 @@
 import type { NextAuthConfig } from "next-auth";
 
 /** Path prefixes reachable WITHOUT authentication. */
-const PUBLIC_PREFIXES = ["/login", "/signup", "/public", "/embed"];
+const PUBLIC_PREFIXES = ["/login", "/signup", "/public", "/embed", "/invite"];
 
 function isPublicPath(pathname: string): boolean {
   return PUBLIC_PREFIXES.some(

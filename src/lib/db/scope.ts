@@ -33,6 +33,9 @@ export interface AuthContext {
 /** Roles allowed to mutate (create/update/delete) tenant entities. */
 const WRITE_ROLES: ReadonlySet<MemberRole> = new Set(["owner", "admin", "editor"]);
 
+/** Roles allowed to administer the org (audit log, member/role management, …). */
+const ADMIN_ROLES: ReadonlySet<MemberRole> = new Set(["owner", "admin"]);
+
 export function canWrite(ctx: AuthContext): boolean {
   return WRITE_ROLES.has(ctx.role);
 }
@@ -41,6 +44,17 @@ export function canWrite(ctx: AuthContext): boolean {
 export function assertCanWrite(ctx: AuthContext): void {
   if (!canWrite(ctx)) {
     throw new ForbiddenError(`Role "${ctx.role}" cannot modify this resource.`);
+  }
+}
+
+export function canAdmin(ctx: AuthContext): boolean {
+  return ADMIN_ROLES.has(ctx.role);
+}
+
+/** Throw a 403-shaped error when the caller isn't an org admin/owner. */
+export function assertCanAdmin(ctx: AuthContext): void {
+  if (!canAdmin(ctx)) {
+    throw new ForbiddenError(`Role "${ctx.role}" cannot access this resource.`);
   }
 }
 

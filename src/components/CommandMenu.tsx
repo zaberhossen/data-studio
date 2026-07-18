@@ -12,6 +12,7 @@
 
 import * as React from "react";
 import { useRouter } from "next/navigation";
+import { useSession } from "next-auth/react";
 import {
   Command as CommandIcon,
   Database,
@@ -21,8 +22,10 @@ import {
   Moon,
   Save,
   ScrollText,
+  ShieldCheck,
   Table2,
   Terminal,
+  Users,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useWorkspace } from "@/app/(app)/WorkspaceProvider";
@@ -52,6 +55,9 @@ function toggleTheme() {
 export function CommandMenu({ open, onOpenChange }: CommandMenuProps) {
   const router = useRouter();
   const { newQuery } = useWorkspace();
+  const { data: session } = useSession();
+  const role = session?.user?.role ?? null;
+  const isAdmin = role === "owner" || role === "admin";
   const [query, setQuery] = React.useState("");
   const [activeIndex, setActiveIndex] = React.useState(0);
   const inputRef = React.useRef<HTMLInputElement>(null);
@@ -104,6 +110,24 @@ export function CommandMenu({ open, onOpenChange }: CommandMenuProps) {
       { id: "go-saved", label: "Go to Saved queries", hint: "Navigate", icon: Save, run: nav("/saved") },
       { id: "go-logs", label: "Go to Logs", hint: "Navigate", icon: ScrollText, run: nav("/logs") },
       { id: "go-dashboards", label: "Go to Dashboards", hint: "Navigate", icon: LayoutDashboard, run: nav("/dashboards") },
+      ...(isAdmin
+        ? [
+            {
+              id: "go-members",
+              label: "Go to Members",
+              hint: "Navigate",
+              icon: Users,
+              run: nav("/members"),
+            },
+            {
+              id: "go-audit",
+              label: "Go to Audit log",
+              hint: "Navigate",
+              icon: ShieldCheck,
+              run: nav("/audit"),
+            },
+          ]
+        : []),
       {
         id: "toggle-theme",
         label: "Toggle theme",
@@ -115,7 +139,7 @@ export function CommandMenu({ open, onOpenChange }: CommandMenuProps) {
         },
       },
     ];
-  }, [router, newQuery, onOpenChange]);
+  }, [router, newQuery, onOpenChange, isAdmin]);
 
   const filtered = React.useMemo(() => {
     const q = query.trim().toLowerCase();

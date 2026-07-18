@@ -77,6 +77,59 @@ convention. This doc is the checklist plus where each rule lives.
   gets a JSON 401, not a login redirect. Writes (create/delete) also require an
   editor+ role (`assertCanWrite`).
 
+## 5b. Audit log viewer (M15)
+
+- Security-relevant actions (`share.create`/`share.revoke`/`share.view`, and any
+  future action) are recorded fire-and-forget by `logAudit`
+  ([`audit.ts`](../src/lib/server/audit.ts)); reads go through `listAudit`, which
+  is **admin/owner only** (`assertCanAdmin`) and org-scoped (`requireOrg`), so an
+  admin can never read another tenant's log. Exposed at `GET /api/audit-log`
+  (403 for non-admins) and the `/audit` page.
+
+## 5b′. Member management + invitations (M15)
+
+- Member/role management and invitations
+  ([`member-store.ts`](../src/lib/server/member-store.ts)) are org-scoped
+  (`requireOrg`) and admin-gated (`assertCanAdmin`). Role rules
+  ([`members.ts`](../src/lib/types/members.ts)): owners act on any role; admins
+  on everyone except owners (can't create/modify/remove owners). DB-enforced
+  invariants: the last owner can't be demoted or removed, and no one can change
+  or remove their own seat here.
+- Invitations are **link-based** — an opaque, unguessable token is the
+  capability (like a share link). `getInviteByToken` is the only unauthenticated
+  read (leaks nothing beyond org name / invited email / role), and
+  `acceptInvite` requires the authenticated caller's email to match the invited
+  address, so a leaked link can't be redeemed by someone else. Invites expire
+  after 14 days and are soft-revocable.
+
+## 5c. HTTP security headers (M15)
+
+Set in [`next.config.mjs`](../next.config.mjs) `headers()`:
+
+- **Baseline (enforced on every route):** `X-Content-Type-Options: nosniff`,
+  `Referrer-Policy: strict-origin-when-cross-origin`,
+  `Strict-Transport-Security` (2y, includeSubDomains, preload),
+  `Permissions-Policy` (camera/microphone/geolocation/browsing-topics disabled),
+  `X-DNS-Prefetch-Control`.
+- **Framing (enforced):** `X-Frame-Options: DENY` + a dedicated
+  `Content-Security-Policy: frame-ancestors 'none'` on every route except
+  `/embed/*`, which gets `frame-ancestors <EMBED_FRAME_ANCESTORS|*>` so it can be
+  iframed. This lives in its own CSP header so the content policy below can be
+  report-only without weakening clickjacking protection.
+- **Content-Security-Policy (report-only by default):** `default-src 'self'`
+  with `script-src` allowing `'unsafe-inline'` (Next hydration, no nonce
+  pipeline), `'unsafe-eval'` + `'wasm-unsafe-eval'` + `blob:` (Rust→WASM +
+  DuckDB-WASM workers), `worker-src`/`child-src blob:`, `connect-src 'self'
+  https: wss: blob: data:` (client-side http-file/rest-api connectors + DuckDB
+  streams reach arbitrary https origins), `img-src 'self' data: blob: https:`
+  (canvas image elements + geo-map tiles), `style-src 'unsafe-inline'`,
+  `object-src 'none'`, `base-uri`/`form-action 'self'`.
+  Emitted as **`Content-Security-Policy-Report-Only`** so a mis-scoped directive
+  logs a console violation instead of breaking a page. **Set `CSP_ENFORCE=1`**
+  to promote it to the enforcing `Content-Security-Policy` header once a browser
+  pass (dashboards, canvas, SQL editor, public/embed, a live http/rest source)
+  confirms the report-only console is clean.
+
 ## 6. Read-only SQL guard (DuckDB worker)
 
 - The DuckDB worker only runs a **single** `SELECT` / `WITH` statement; a large

@@ -156,6 +156,37 @@ export const memberships = pgTable(
 );
 
 // ---------------------------------------------------------------------------
+// Invitations (pending org memberships)
+// ---------------------------------------------------------------------------
+
+export const invitations = pgTable(
+  "invitations",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    orgId: uuid("org_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    /** Lowercased invitee email. */
+    email: text("email").notNull(),
+    role: roleEnum("role").notNull().default("viewer"),
+    /** Opaque, unguessable accept token (the capability — shared by the admin). */
+    token: text("token").notNull().unique(),
+    invitedBy: text("invited_by").references(() => users.id, { onDelete: "set null" }),
+    /** Set once accepted; a non-null value means the invite is spent. */
+    acceptedAt: timestamp("accepted_at", { withTimezone: true }),
+    acceptedBy: text("accepted_by").references(() => users.id, { onDelete: "set null" }),
+    /** Soft-revoke (kept for audit); a non-null value disables the token. */
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+    expiresAt: timestamp("expires_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => ({
+    orgIdx: index("invitations_org_idx").on(t.orgId),
+    emailIdx: index("invitations_email_idx").on(sql`lower(${t.email})`),
+  }),
+);
+
+// ---------------------------------------------------------------------------
 // Data sources (encrypted secrets)
 // ---------------------------------------------------------------------------
 
