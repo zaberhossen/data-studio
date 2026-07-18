@@ -86,6 +86,22 @@ convention. This doc is the checklist plus where each rule lives.
   admin can never read another tenant's log. Exposed at `GET /api/audit-log`
   (403 for non-admins) and the `/audit` page.
 
+## 5b′. Member management + invitations (M15)
+
+- Member/role management and invitations
+  ([`member-store.ts`](../src/lib/server/member-store.ts)) are org-scoped
+  (`requireOrg`) and admin-gated (`assertCanAdmin`). Role rules
+  ([`members.ts`](../src/lib/types/members.ts)): owners act on any role; admins
+  on everyone except owners (can't create/modify/remove owners). DB-enforced
+  invariants: the last owner can't be demoted or removed, and no one can change
+  or remove their own seat here.
+- Invitations are **link-based** — an opaque, unguessable token is the
+  capability (like a share link). `getInviteByToken` is the only unauthenticated
+  read (leaks nothing beyond org name / invited email / role), and
+  `acceptInvite` requires the authenticated caller's email to match the invited
+  address, so a leaked link can't be redeemed by someone else. Invites expire
+  after 14 days and are soft-revocable.
+
 ## 5c. HTTP security headers (M15)
 
 Set in [`next.config.mjs`](../next.config.mjs) `headers()`:

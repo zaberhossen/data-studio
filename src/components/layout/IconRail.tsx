@@ -22,6 +22,7 @@ import {
   Save,
   Table2,
   Terminal,
+  Users,
   Home,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -43,6 +44,7 @@ export const NAV: NavItem[] = [
   { href: "/saved", label: "Saved queries", icon: Save },
   { href: "/logs", label: "Logs", icon: ScrollText },
   { href: "/dashboards", label: "Dashboards", icon: LayoutDashboard },
+  { href: "/members", label: "Members", icon: Users, adminOnly: true },
   { href: "/audit", label: "Audit log", icon: ShieldCheck, adminOnly: true },
 ];
 

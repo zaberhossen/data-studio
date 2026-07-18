@@ -25,6 +25,7 @@ import {
   ShieldCheck,
   Table2,
   Terminal,
+  Users,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useWorkspace } from "@/app/(app)/WorkspaceProvider";
@@ -111,6 +112,13 @@ export function CommandMenu({ open, onOpenChange }: CommandMenuProps) {
       { id: "go-dashboards", label: "Go to Dashboards", hint: "Navigate", icon: LayoutDashboard, run: nav("/dashboards") },
       ...(isAdmin
         ? [
+            {
+              id: "go-members",
+              label: "Go to Members",
+              hint: "Navigate",
+              icon: Users,
+              run: nav("/members"),
+            },
             {
               id: "go-audit",
               label: "Go to Audit log",

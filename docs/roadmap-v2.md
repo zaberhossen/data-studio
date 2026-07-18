@@ -448,7 +448,23 @@ re-query; one dataset crossing into the worker.
       `(public)/error.tsx`, root `global-error.tsx` (self-contained inline styles).
       *(Empty states + skeletons already exist in results/widgets; a broader
       skeleton/empty-state sweep across remaining surfaces still open.)*
-- [ ] User invitations + role management UI (AuthContext roles exist).
+- [x] User invitations + role management UI (AuthContext roles exist).
+      New `invitations` table (migration `0005`, run `pnpm db:migrate`) +
+      `member-store.ts` (org-scoped, admin-gated): list/change-role/remove
+      members and create/list/revoke/accept invites. Pure role rules in
+      `lib/types/members.ts` (unit-tested: owner acts on anyone, admin on
+      everyone-but-owners, assignable-role matrix); DB-dependent guards in the
+      store (last-owner can't be demoted/removed, no self-modify, admins can't
+      touch owners). Invites are **link-based** (no mailer wired — the admin
+      copies an opaque-token accept link); `acceptInvite` binds redemption to the
+      invited email. Routes: `/api/orgs/members[/id]`,
+      `/api/orgs/members/invites[/id]`, `/api/invites/[token]` (GET preview +
+      POST accept). UI: admin-gated `/members` page (`MembersView` — inline role
+      selects + remove + invite form) and a public `/invite/[token]` accept page
+      that round-trips through login via `?callbackUrl` and switches org on
+      accept. Admin-gated nav in `IconRail` + `CommandMenu`. Actions audit-logged
+      (`member.invite`/`role_change`/`remove`/`invite_revoke`/`join`). *(Email
+      delivery of invites still needs a mailer — deferred with observability.)*
 - [x] Audit log viewer for admins. Read-only viewer over the existing
       fire-and-forget audit log (share create/revoke/view + any future action).
       `canAdmin`/`assertCanAdmin` (owner+admin) gate in `db/scope.ts`; client-safe
