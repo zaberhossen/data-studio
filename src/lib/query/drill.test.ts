@@ -3,6 +3,7 @@ import {
   bucketRange,
   drillDistribution,
   drillFilterEq,
+  drillFilterRange,
   drillSummarize,
   drillViewRecords,
   drillZoomIn,
@@ -154,5 +155,45 @@ describe("drillDistribution / drillSummarize", () => {
   it("distribution resolves a dimension alias to its underlying column", () => {
     const next = drillDistribution(AGG, FIELDS, "category");
     expect(next!.dimensions[0]).toMatchObject({ column: "category" });
+  });
+});
+
+describe("drillFilterRange", () => {
+  it("spans temporal buckets with a half-open [min start, max next-start) range", () => {
+    const next = drillFilterRange(AGG, FIELDS, "created_at_month", "2024-01-01", "2024-03-01");
+    const leaves = next!.filters.slice(-2);
+    expect(leaves).toMatchObject([
+      { column: "created_at", op: "gte", value: "2024-01-01 00:00:00" },
+      { column: "created_at", op: "lt", value: "2024-04-01 00:00:00" },
+    ]);
+  });
+
+  it("is order-independent (reversed boundaries give the same range)", () => {
+    const expected = [
+      { column: "created_at", op: "gte", value: "2024-01-01 00:00:00" },
+      { column: "created_at", op: "lt", value: "2024-04-01 00:00:00" },
+    ];
+    const fwd = drillFilterRange(AGG, FIELDS, "created_at_month", "2024-01-01", "2024-03-01");
+    const rev = drillFilterRange(AGG, FIELDS, "created_at_month", "2024-03-01", "2024-01-01");
+    expect(fwd!.filters.slice(-2)).toMatchObject(expected);
+    expect(rev!.filters.slice(-2)).toMatchObject(expected);
+  });
+
+  it("filters a raw numeric column BETWEEN, min/max-ordered", () => {
+    const next = drillFilterRange(base({}), FIELDS, "amount", 100, 20);
+    expect(next!.filters.slice(-1)).toMatchObject([
+      { column: "amount", op: "between", low: "20", high: "100" },
+    ]);
+  });
+
+  it("returns null for a categorical breakout and a non-numeric raw column", () => {
+    expect(drillFilterRange(AGG, FIELDS, "category", "a", "b")).toBeNull();
+    expect(drillFilterRange(base({}), FIELDS, "category", "a", "b")).toBeNull();
+  });
+
+  it("produces a draft that still compiles", () => {
+    const next = drillFilterRange(base({}), FIELDS, "amount", 5, 50);
+    expect(next).not.toBeNull();
+    expect(compileIrDraft(next!, FIELDS, "t", { allowBare: true }).errors).toEqual([]);
   });
 });

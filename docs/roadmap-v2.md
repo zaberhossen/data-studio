@@ -193,16 +193,25 @@ now express the full IR; 106 draft/compile/expr tests cover it.
 - [x] Dropped series disclosed in `VizChart` when the series count exceeds the
       palette cap.
 
-### Stage 5 — Drill-through (Metabase's killer feature, cheap for us on LOCAL)
+### Stage 5 — Drill-through (Metabase's killer feature, cheap for us on LOCAL) ✅
 
-- [ ] Column-header menu in results: filter by column, sort, **distribution**
-      (instant histogram), sum/avg, distinct values.
-- [ ] Cell click: filter by this value; **view underlying records** for an
-      aggregated cell; break out by category/time.
-- [ ] Chart point click: filter, view records, **temporal zoom** ("see this
-      month by week"), drag range-select on continuous axes to filter.
-- [ ] All implemented as IR rewrites executed LOCAL — instant, no server
-      round-trip; this is where client-side compute visibly beats Metabase.
+All drill actions are pure `draft → draft` LOCAL rewrites in `lib/query/drill.ts`
+(20 tests), wired through `ResultsRegion`.
+
+- [x] Column-header menu (`headerMenu`): **Distribution** (group-by + count),
+      **Sum**, **Average**, **Distinct count**; column sort via the header.
+- [x] Cell click menu (`cellMenu`): **Filter = value** (temporal cells pin a
+      half-open bucket range), **Zoom in** (finer bucket), **View underlying
+      records** (drops the summarize layer, keeps filters → raw listing).
+- [x] Chart interactions: **click** a mark → temporal zoom or filter
+      (`onCategoryClick`); **drag range-select** across the x-axis →
+      `drillFilterRange` filters to that span (temporal buckets → `[min start,
+      max next-start)`; raw numeric → `BETWEEN`). Recharts `ReferenceArea`
+      band + merged mouse handlers, gated so read-only dashboards stay inert;
+      the post-drag click is swallowed so a range doesn't also single-filter.
+      *(Chart drag interaction needs a browser pass; the range primitive +
+      draft rewrite are unit-tested.)*
+- [x] Every action is a LOCAL IR rewrite — instant, no server round-trip.
 
 ### Stage 6 — SQL editor pro ✅ (done)
 

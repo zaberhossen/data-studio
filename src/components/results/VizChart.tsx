@@ -30,6 +30,7 @@ import {
   LineChart,
   Pie,
   PieChart,
+  ReferenceArea,
   ReferenceLine,
   ResponsiveContainer,
   Scatter,
@@ -58,6 +59,8 @@ interface Props {
   viz: WidgetViz;
   /** Click a mark → emit its category value (cross-filter). */
   onCategoryClick?: (value: string) => void;
+  /** Drag across the x-axis → emit the two boundary values (range filter). */
+  onRangeSelect?: (a: string, b: string) => void;
 }
 
 function Empty({ note = "No chartable data." }: { note?: string }) {
@@ -68,9 +71,50 @@ function Empty({ note = "No chartable data." }: { note?: string }) {
   );
 }
 
-export function VizChart({ table, viz, onCategoryClick }: Props) {
+export function VizChart({ table, viz, onCategoryClick, onRangeSelect }: Props) {
   const fmt = React.useMemo(() => makeNumberFormatter(viz.numberFormat), [viz.numberFormat]);
   const axisFmt = viz.numberFormat ? fmt : (v: unknown) => compactFormat(v);
+
+  // Drag range-select state (only live when onRangeSelect is wired — i.e. the
+  // query panel, never read-only dashboards). dragA/dragB are x-axis category
+  // labels; a completed drag emits them to the parent's drill.
+  const [dragA, setDragA] = React.useState<string | null>(null);
+  const [dragB, setDragB] = React.useState<string | null>(null);
+  const dragging = React.useRef(false);
+  const justRanged = React.useRef(false);
+
+  const handleChartClick = React.useCallback(
+    (e: { activeLabel?: string | number }) => {
+      // A drag that produced a range also fires a click on mouse-up; swallow it
+      // once so we don't ALSO single-filter the last hovered bucket.
+      if (justRanged.current) {
+        justRanged.current = false;
+        return;
+      }
+      if (e?.activeLabel != null) onCategoryClick?.(String(e.activeLabel));
+    },
+    [onCategoryClick],
+  );
+  const handleMouseDown = React.useCallback((e: { activeLabel?: string | number }) => {
+    if (e?.activeLabel == null) return;
+    dragging.current = true;
+    setDragA(String(e.activeLabel));
+    setDragB(String(e.activeLabel));
+  }, []);
+  const handleMouseMove = React.useCallback((e: { activeLabel?: string | number }) => {
+    if (!dragging.current || e?.activeLabel == null) return;
+    setDragB(String(e.activeLabel));
+  }, []);
+  const handleMouseUp = React.useCallback(() => {
+    if (!dragging.current) return;
+    dragging.current = false;
+    if (dragA != null && dragB != null && dragA !== dragB) {
+      justRanged.current = true;
+      onRangeSelect?.(dragA, dragB);
+    }
+    setDragA(null);
+    setDragB(null);
+  }, [dragA, dragB, onRangeSelect]);
 
   if (!table || table.rows.length === 0) return <Empty />;
   if (viz.type === "scatter") return <ScatterView table={table} viz={viz} fmt={fmt} />;
@@ -116,12 +160,34 @@ export function VizChart({ table, viz, onCategoryClick }: Props) {
       />
     ) : null;
 
-  const handleClick =
-    onCategoryClick && viz.type !== "pie"
-      ? (e: { activeLabel?: string | number }) => {
-          if (e?.activeLabel != null) onCategoryClick(String(e.activeLabel));
-        }
-      : undefined;
+  // Merge click + drag handlers onto the cartesian charts. Drag is only wired
+  // when onRangeSelect is present (query panel), so read-only dashboards stay
+  // inert. Refs are read inside the stable callbacks above, never during render.
+  const chartEvents =
+    viz.type === "pie"
+      ? {}
+      : {
+          ...(onCategoryClick ? { onClick: handleChartClick } : {}),
+          ...(onRangeSelect
+            ? {
+                onMouseDown: handleMouseDown,
+                onMouseMove: handleMouseMove,
+                onMouseUp: handleMouseUp,
+              }
+            : {}),
+        };
+
+  // The translucent selection band shown while dragging.
+  const dragBand =
+    dragA != null && dragB != null && dragA !== dragB ? (
+      <ReferenceArea
+        x1={dragA}
+        x2={dragB}
+        strokeOpacity={0.3}
+        fill="hsl(var(--brand))"
+        fillOpacity={0.12}
+      />
+    ) : null;
 
   const xAxis = (
     <XAxis dataKey={CATEGORY_KEY} tick={TICK} tickLine={false} axisLine={{ stroke: AXIS }}>
@@ -191,13 +257,14 @@ export function VizChart({ table, viz, onCategoryClick }: Props) {
             </Pie>
           </PieChart>
         ) : viz.type === "line" ? (
-          <LineChart data={data.rows} onClick={handleClick}>
+          <LineChart data={data.rows} {...chartEvents}>
             {grid}
             {xAxis}
             {yAxis}
             {tooltip}
             {legendEl}
             {refLine}
+            {dragBand}
             {data.series.map((s, i) => (
               <Line key={s.key} type="monotone" dataKey={s.key} name={seriesName(s)} stroke={color(s.key, i)} strokeWidth={2} dot={false} isAnimationActive={false}>
                 {markLabels}
@@ -205,13 +272,14 @@ export function VizChart({ table, viz, onCategoryClick }: Props) {
             ))}
           </LineChart>
         ) : viz.type === "area" ? (
-          <AreaChart data={data.rows} onClick={handleClick} stackOffset={percent ? "expand" : undefined}>
+          <AreaChart data={data.rows} {...chartEvents} stackOffset={percent ? "expand" : undefined}>
             {grid}
             {xAxis}
             {yAxis}
             {tooltip}
             {legendEl}
             {refLine}
+            {dragBand}
             {data.series.map((s, i) => (
               <Area
                 key={s.key}
@@ -230,13 +298,14 @@ export function VizChart({ table, viz, onCategoryClick }: Props) {
             ))}
           </AreaChart>
         ) : viz.type === "combo" ? (
-          <ComposedChart data={data.rows} onClick={handleClick}>
+          <ComposedChart data={data.rows} {...chartEvents}>
             {grid}
             {xAxis}
             {yAxis}
             {tooltip}
             {legendEl}
             {refLine}
+            {dragBand}
             {data.series.map((s, i) =>
               viz.lineKeys?.includes(s.key) ? (
                 <Line key={s.key} type="monotone" dataKey={s.key} name={seriesName(s)} stroke={color(s.key, i)} strokeWidth={2} dot={false} isAnimationActive={false}>
@@ -251,13 +320,14 @@ export function VizChart({ table, viz, onCategoryClick }: Props) {
           </ComposedChart>
         ) : (
           // bar (grouped / stacked / percent)
-          <BarChart data={data.rows} onClick={handleClick} stackOffset={percent ? "expand" : undefined}>
+          <BarChart data={data.rows} {...chartEvents} stackOffset={percent ? "expand" : undefined}>
             {grid}
             {xAxis}
             {yAxis}
             {tooltip}
             {legendEl}
             {refLine}
+            {dragBand}
             {data.series.map((s, i) => (
               <Bar
                 key={s.key}
