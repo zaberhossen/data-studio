@@ -40,17 +40,22 @@ Fix (no server changes needed):
       re-fetches the server list + re-hydrates file sources for the new org
       instead of showing the previous org's stale sources.
 
-### B. Quick wins / stub cleanup
+### B. Quick wins / stub cleanup (all done)
 
-- [ ] SQL editor Limit select is display-only — wire it into `runSql`
-      (SqlEditorView.tsx:48).
-- [ ] ⌘↵ Run hint is cosmetic — bind Mod-Enter in CodeMirror.
-- [ ] Saved `execution` preference is persisted but not restored on open
-      (useQueryWorkspace.ts:419) — restore into the toggle.
-- [ ] Delete dead code: `QueryBuilder.tsx`, `FilterRow.tsx` (or adopt
-      `MultiValueInput.tsx` for in/not_in filters instead of comma-split text).
-- [ ] Fix stale comment compile.ts:14 (joins/windows ARE compiled). Remove or
-      implement the `bigquery` DialectId stub.
+- [x] SQL editor Limit select is wired: `run()` reads the `limit` state and
+      passes `{ maxRows }` into `ws.runSql` (0 = no limit) — `SqlEditorView.tsx`.
+- [x] ⌘↵ Run is bound in CodeMirror — a high-precedence `Mod-Enter` keymap in
+      `SqlEditor.tsx` runs the statement (or the current selection) ahead of
+      `insertNewline`.
+- [x] Saved `execution` preference restores on open — `openSavedQuery` calls
+      `setExecutionMode(sq.execution ?? "auto")` and the initial run resolves
+      against that stored setting (`useQueryWorkspace.ts`).
+- [x] Dead code removed: `QueryBuilder.tsx` / `FilterRow.tsx` no longer exist;
+      `in`/`not_in` filters use `MultiValueInput` (chip input) in the builder,
+      gated by `irOpTakesMultiValue`, not comma-split text.
+- [x] `compile.ts` header now correctly documents that joins + window functions
+      compile; `DialectId` is `"duckdb" | "postgres" | "mysql"` with no
+      `bigquery` stub (`dialectFor` throws `CompileError` for unsupported kinds).
 
 ### C. Supabase design system
 
