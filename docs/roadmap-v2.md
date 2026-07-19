@@ -122,20 +122,29 @@ now express the full IR; 106 draft/compile/expr tests cover it.
       rest through a `warnings` collector (surfaced on open) instead of silently
       dropping — asserted by round-trip tests.
 
-### Stage 2 — Notebook UX (Metabase editor parity)
+### Stage 2 — Notebook UX (Metabase editor parity) — mostly done
 
-- [ ] **Step pipeline UI**: Data → Join → Custom column → Filter → Summarize →
-      Sort → Limit as visible, reorderable blocks (replacing the single stacked
-      form).
-- [ ] **Per-step preview**: first 10 rows up to that step — cheap on LOCAL
-      (compile the IR truncated at the step, run on DuckDB).
-- [ ] **Column picker on the data step** (raw-mode `fields` selection — needs a
-      small IR addition: `fields?: FieldRef[]` for unaggregated queries).
-- [ ] **SchemaTree upgrade**: search, click-to-add / drag-into-step, field
-      profile popover (distinct count, min/max, null% — one cheap DuckDB query),
-      multi-table view.
-- [ ] **Auto chart suggestion** from result shape (1 dim temporal → line; 1 dim
-      categorical → bar; 2 dims → stacked/grouped; no dims → KPI).
+- [~] **Step pipeline UI**: `AdvancedQueryBuilder` is a NOTEBOOK of colored
+      `NotebookBlock` steps (Data → Joins → Custom columns → Filter → Summarize →
+      Metric filters → Windows → Sort → Limit) replacing the stacked form.
+      *(Blocks follow the pipeline's fixed logical order; free drag-REORDER is
+      deferred — reordering summarize/filter changes query meaning, and the
+      multi-stage feature already covers "summarize then filter again".)*
+- [x] **Per-step preview**: `draftUpToStep(draft, step)` truncates the draft and
+      the parent's `onPreview` runs it LOCAL for a 10-row peek under each step.
+- [x] **Column picker on the data step**: raw-mode `rawColumns` (IR `fields?:
+      FieldRef[]`) — `RawColumnPicker` selects which columns a non-aggregated
+      listing keeps (empty ⇒ all).
+- [~] **SchemaTree upgrade**: search ✅, click-to-add (smart metric/group-by
+      target) ✅, field-profile popover (rows · nulls + null% · distinct ·
+      min/max via one cached DuckDB query) ✅. *(Drag-into-step + multi-table /
+      joined-column view deferred — need a browser pass; click-to-add covers the
+      add-column path. NOTE: joined-table columns aren't yet selectable in
+      summarize/filter — a separate joins-scope follow-up.)*
+- [x] **Auto chart suggestion** (`suggest-viz.ts`, wired in `useQueryWorkspace`
+      while the user hasn't picked a type): no dims → kpi; raw → table; 1 temporal
+      dim → line; 1 categorical → bar; 2 dims → line if time-led else grouped bar.
+      Golden-tested (+8).
 
 ### Stage 3 — New IR capabilities
 
