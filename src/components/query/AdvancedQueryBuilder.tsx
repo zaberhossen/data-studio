@@ -33,7 +33,8 @@ import {
 } from "@/components/ui/select";
 import type { ExecutionSetting } from "@/hooks/useQueryWorkspace";
 import type { AggFn, JoinType, TemporalUnit, WindowFn } from "@/lib/query/ir";
-import { EXPR_FNS } from "@/lib/query/expr-text";
+import { EXPR_FNS, parseExprText } from "@/lib/query/expr-text";
+import { columnRef, spliceSnippet } from "@/lib/query/formula-insert";
 import {
   ALL_IR_AGG_FNS,
   ALL_WINDOW_FNS,
@@ -598,7 +599,7 @@ export function AdvancedQueryBuilder({
                 wide
                 {...pillOpen(c.id)}
               >
-                <CalcRow calc={c} onChange={(next) => updateCalc(c.id, next)} />
+                <CalcRow calc={c} fields={fields} onChange={(next) => updateCalc(c.id, next)} />
               </Pill>
             ))}
             <AddPill tone="neutral" onClick={addCalc} label="Add a custom column" />
@@ -1818,13 +1819,46 @@ function JoinRow({
 
 function CalcRow({
   calc,
+  fields,
   onChange,
 }: {
   calc: DraftCalc;
+  fields: Field[];
   onChange: (next: DraftCalc) => void;
 }) {
+  const inputRef = React.useRef<HTMLInputElement>(null);
+  // Bump on each insert so the "insert" Selects re-fire even when the same
+  // option is picked twice (a remount resets their internal value).
+  const [nonce, setNonce] = React.useState(0);
+
+  const insert = (snippet: string) => {
+    const el = inputRef.current;
+    const start = el?.selectionStart ?? calc.text.length;
+    const end = el?.selectionEnd ?? calc.text.length;
+    const { text, caret } = spliceSnippet(calc.text, start, end, snippet);
+    onChange({ ...calc, text });
+    setNonce((n) => n + 1);
+    // Restore focus + caret after React commits the new value.
+    requestAnimationFrame(() => {
+      const node = inputRef.current;
+      if (!node) return;
+      node.focus();
+      try {
+        node.setSelectionRange(caret, caret);
+      } catch {
+        /* setSelectionRange unsupported on some input types — ignore */
+      }
+    });
+  };
+
+  // Live syntax validation (column existence is checked at compile time).
+  const parsed = calc.text.trim() ? parseExprText(calc.text) : null;
+  const error = parsed?.error ?? null;
+
+  const PICK = "__pick";
+
   return (
-    <div className="flex w-[480px] max-w-[85vw] flex-wrap items-center gap-2">
+    <div className="flex w-[520px] max-w-[85vw] flex-wrap items-center gap-2">
       <Input
         value={calc.name}
         onChange={(e) => onChange({ ...calc, name: e.target.value })}
@@ -1834,17 +1868,61 @@ function CalcRow({
       />
       <span className="text-xs text-muted-foreground">=</span>
       <Input
+        ref={inputRef}
         value={calc.text}
         onChange={(e) => onChange({ ...calc, text: e.target.value })}
         placeholder="[revenue] - [cost]"
-        className="min-w-[220px] flex-1 font-mono text-xs"
+        className={cn(
+          "min-w-[200px] flex-1 font-mono text-xs",
+          error && "border-destructive focus-visible:outline-destructive",
+        )}
         aria-label="Formula"
+        aria-invalid={error ? true : undefined}
         title={`Functions: ${EXPR_FNS.join(", ")} · case when … then … else … end`}
       />
-      <p className="w-full text-[11px] text-muted-foreground">
-        e.g. <code className="font-mono">[revenue] - [cost]</code> or{" "}
-        <code className="font-mono">case when [qty] &gt; 9 then &apos;big&apos; else &apos;small&apos; end</code>
-      </p>
+      {/* Insert a column reference at the caret */}
+      {fields.length > 0 && (
+        <Select key={`col-${nonce}`} value={PICK} onValueChange={(v) => v !== PICK && insert(columnRef(v))}>
+          <SelectTrigger className="h-8 w-[104px]" aria-label="Insert column">
+            <SelectValue placeholder="＋ column" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value={PICK} disabled>
+              ＋ column
+            </SelectItem>
+            {fields.map((f) => (
+              <SelectItem key={f.name} value={f.name}>
+                {f.name}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      )}
+      {/* Insert a function call at the caret */}
+      <Select key={`fn-${nonce}`} value={PICK} onValueChange={(v) => v !== PICK && insert(`${v}(`)}>
+        <SelectTrigger className="h-8 w-[92px]" aria-label="Insert function">
+          <SelectValue placeholder="＋ fn" />
+        </SelectTrigger>
+        <SelectContent>
+          <SelectItem value={PICK} disabled>
+            ＋ fn
+          </SelectItem>
+          {EXPR_FNS.map((fn) => (
+            <SelectItem key={fn} value={fn}>
+              {fn}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+      {error ? (
+        <p className="w-full text-[11px] text-destructive">{error}</p>
+      ) : (
+        <p className="w-full text-[11px] text-muted-foreground">
+          Reference columns as <code className="font-mono">[name]</code>; e.g.{" "}
+          <code className="font-mono">[revenue] - [cost]</code> or{" "}
+          <code className="font-mono">case when [qty] &gt; 9 then &apos;big&apos; else &apos;small&apos; end</code>
+        </p>
+      )}
     </div>
   );
 }

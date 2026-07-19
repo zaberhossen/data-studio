@@ -92,23 +92,35 @@ OR/NOT filter groups, expression functions (case/concat/date_trunc/…),
 multi-condition joins, multi-key sort, aliases — all compile and are tested,
 but unreachable from the UI, and `irToDraft` silently drops them.
 
-### Stage 1 — Close the IR↔UI gap (pure UI work, IR untouched)
+### Stage 1 — Close the IR↔UI gap (pure UI work, IR untouched) ✅
 
-- [ ] Filter **groups**: nested AND/OR/NOT tree UI (IrDraft currently flattens
-      to AND-only and drops groups — ir-draft.ts:735).
-- [ ] **Having** step (post-aggregation filter) — IR + compiler already done.
-- [ ] **Sort**: multi-key, sortable by dimension/column (today: single metric
-      ordinal only).
-- [ ] Dimension/aggregation **aliases**.
-- [ ] **Joins**: replace free-text table/column inputs with pickers backed by
-      introspected schema; support multi-condition joins (IR supports, draft
-      hydrates only `on[0]`).
-- [ ] **Window functions**: multi-column partition/order.
-- [ ] **Expression editor** for calculated fields: Metabase-style formula bar
-      with `[Column]` refs, autocomplete, and the full Expr algebra (binary ops,
-      8 fns, `case`) — today's UI is a single `a <op> b` row.
-- [ ] Make `irToDraft` lossless for everything the new UI can express; warn
-      (don't silently drop) on anything it can't.
+The draft model (`ir-draft.ts`) + notebook builder (`AdvancedQueryBuilder.tsx`)
+now express the full IR; 106 draft/compile/expr tests cover it.
+
+- [x] Filter **groups**: `DraftFilterNode` is a TREE — `DraftFilterGroup`
+      (`and`/`or` + optional `not`) nesting `DraftIrFilter` leaves; the builder
+      renders nested AND/OR/NOT groups (`FilterGroupEditor`), `compileIrDraft`
+      emits the IR filter tree, `irToDraft` rebuilds it.
+- [x] **Having** step: `DraftHaving[]` (`HavingOp`, metric by index) → HAVING
+      block in the builder; compiler/IR already supported it.
+- [x] **Sort**: `DraftSort[]` — multi-key over any OUTPUT column
+      (dimension/metric/window alias via `sortableNamesForDraft`), asc/desc.
+- [x] Dimension/metric **aliases**: `DraftDimension.alias` + `DraftMetric.alias`,
+      surfaced in every pill + editor.
+- [x] **Joins**: `DraftJoin` with a table picker, an optional alias, and
+      **multi-condition** `DraftJoinCondition[]` (add/remove rows), replacing the
+      old free-text single-condition input.
+- [x] **Window functions**: multi-column partition + multi-key order
+      (`DraftWindow` + `newDraftWindowOrder`), value/arg/frame controls.
+- [x] **Expression editor**: calculated fields are a formula bar over the full
+      closed `Expr` algebra — `[Column]` refs, binary ops, the 8 `EXPR_FNS`, and
+      `case when … then … else … end` (`expr-text.ts` parse/format, round-trip
+      tested). Assisted authoring added: **insert-column** and **insert-function**
+      dropdowns splice at the caret (`formula-insert.ts`, pure + tested) and the
+      field shows **live syntax validation** from `parseExprText`.
+- [x] `irToDraft` is lossless for everything the UI can express and reports the
+      rest through a `warnings` collector (surfaced on open) instead of silently
+      dropping — asserted by round-trip tests.
 
 ### Stage 2 — Notebook UX (Metabase editor parity)
 
