@@ -22,28 +22,40 @@ keeps the `File` handle in a `useRef` Map and the metadata in `localSources`
 state — nothing is written anywhere durable, so a refresh wipes them.
 
 Fix (no server changes needed):
-- [ ] New client store `src/lib/sources/local-store.ts` following the existing
+- [x] New client store `src/lib/sources/local-store.ts` following the existing
       swappable-store seam pattern, backed by **IndexedDB** (structured clone
-      persists `File`/`Blob` natively — store `{id, name, file}` rows).
-- [ ] `useDataSources`: hydrate `localSources` + `fileHandles` from IndexedDB on
+      persists `File`/`Blob` natively — store `{id, orgId, name, file}` rows;
+      SSR/private-mode Noop fallback).
+- [x] `useDataSources`: hydrate `localSources` + `fileHandles` from IndexedDB on
       mount; write-through in `addFileSource`; delete in `removeSource`.
       `activate` already lazily calls `engine.loadFile(file)`, so worker
       re-registration works unchanged after reload.
-- [ ] Persist `activeId` (localStorage) and re-activate on boot.
-- [ ] UX: make the active workspace/org obvious — sources are org-scoped, so an
-      org switch "losing" sources must not read as a persistence bug.
+- [x] Persist `activeId` (localStorage) and re-activate on boot.
+- [x] UX: sources no longer bleed across orgs. File sources are now **org-scoped**
+      — records carry `orgId`, `list(orgId)` filters, and the last-active source
+      id is keyed per org (unit-tested: no cross-org bleed). `useDataSources`
+      takes the active `orgId`; `WorkspaceProvider` keeps the engine hoisted
+      (boots once) but **keys the org-scoped layer (sources + query session) by
+      org**, so an org switch (`router.refresh()`, no full remount) cleanly
+      re-fetches the server list + re-hydrates file sources for the new org
+      instead of showing the previous org's stale sources.
 
-### B. Quick wins / stub cleanup
+### B. Quick wins / stub cleanup (all done)
 
-- [ ] SQL editor Limit select is display-only — wire it into `runSql`
-      (SqlEditorView.tsx:48).
-- [ ] ⌘↵ Run hint is cosmetic — bind Mod-Enter in CodeMirror.
-- [ ] Saved `execution` preference is persisted but not restored on open
-      (useQueryWorkspace.ts:419) — restore into the toggle.
-- [ ] Delete dead code: `QueryBuilder.tsx`, `FilterRow.tsx` (or adopt
-      `MultiValueInput.tsx` for in/not_in filters instead of comma-split text).
-- [ ] Fix stale comment compile.ts:14 (joins/windows ARE compiled). Remove or
-      implement the `bigquery` DialectId stub.
+- [x] SQL editor Limit select is wired: `run()` reads the `limit` state and
+      passes `{ maxRows }` into `ws.runSql` (0 = no limit) — `SqlEditorView.tsx`.
+- [x] ⌘↵ Run is bound in CodeMirror — a high-precedence `Mod-Enter` keymap in
+      `SqlEditor.tsx` runs the statement (or the current selection) ahead of
+      `insertNewline`.
+- [x] Saved `execution` preference restores on open — `openSavedQuery` calls
+      `setExecutionMode(sq.execution ?? "auto")` and the initial run resolves
+      against that stored setting (`useQueryWorkspace.ts`).
+- [x] Dead code removed: `QueryBuilder.tsx` / `FilterRow.tsx` no longer exist;
+      `in`/`not_in` filters use `MultiValueInput` (chip input) in the builder,
+      gated by `irOpTakesMultiValue`, not comma-split text.
+- [x] `compile.ts` header now correctly documents that joins + window functions
+      compile; `DialectId` is `"duckdb" | "postgres" | "mysql"` with no
+      `bigquery` stub (`dialectFor` throws `CompileError` for unsupported kinds).
 
 ### C. Supabase design system
 
@@ -80,38 +92,59 @@ OR/NOT filter groups, expression functions (case/concat/date_trunc/…),
 multi-condition joins, multi-key sort, aliases — all compile and are tested,
 but unreachable from the UI, and `irToDraft` silently drops them.
 
-### Stage 1 — Close the IR↔UI gap (pure UI work, IR untouched)
+### Stage 1 — Close the IR↔UI gap (pure UI work, IR untouched) ✅
 
-- [ ] Filter **groups**: nested AND/OR/NOT tree UI (IrDraft currently flattens
-      to AND-only and drops groups — ir-draft.ts:735).
-- [ ] **Having** step (post-aggregation filter) — IR + compiler already done.
-- [ ] **Sort**: multi-key, sortable by dimension/column (today: single metric
-      ordinal only).
-- [ ] Dimension/aggregation **aliases**.
-- [ ] **Joins**: replace free-text table/column inputs with pickers backed by
-      introspected schema; support multi-condition joins (IR supports, draft
-      hydrates only `on[0]`).
-- [ ] **Window functions**: multi-column partition/order.
-- [ ] **Expression editor** for calculated fields: Metabase-style formula bar
-      with `[Column]` refs, autocomplete, and the full Expr algebra (binary ops,
-      8 fns, `case`) — today's UI is a single `a <op> b` row.
-- [ ] Make `irToDraft` lossless for everything the new UI can express; warn
-      (don't silently drop) on anything it can't.
+The draft model (`ir-draft.ts`) + notebook builder (`AdvancedQueryBuilder.tsx`)
+now express the full IR; 106 draft/compile/expr tests cover it.
 
-### Stage 2 — Notebook UX (Metabase editor parity)
+- [x] Filter **groups**: `DraftFilterNode` is a TREE — `DraftFilterGroup`
+      (`and`/`or` + optional `not`) nesting `DraftIrFilter` leaves; the builder
+      renders nested AND/OR/NOT groups (`FilterGroupEditor`), `compileIrDraft`
+      emits the IR filter tree, `irToDraft` rebuilds it.
+- [x] **Having** step: `DraftHaving[]` (`HavingOp`, metric by index) → HAVING
+      block in the builder; compiler/IR already supported it.
+- [x] **Sort**: `DraftSort[]` — multi-key over any OUTPUT column
+      (dimension/metric/window alias via `sortableNamesForDraft`), asc/desc.
+- [x] Dimension/metric **aliases**: `DraftDimension.alias` + `DraftMetric.alias`,
+      surfaced in every pill + editor.
+- [x] **Joins**: `DraftJoin` with a table picker, an optional alias, and
+      **multi-condition** `DraftJoinCondition[]` (add/remove rows), replacing the
+      old free-text single-condition input.
+- [x] **Window functions**: multi-column partition + multi-key order
+      (`DraftWindow` + `newDraftWindowOrder`), value/arg/frame controls.
+- [x] **Expression editor**: calculated fields are a formula bar over the full
+      closed `Expr` algebra — `[Column]` refs, binary ops, the 8 `EXPR_FNS`, and
+      `case when … then … else … end` (`expr-text.ts` parse/format, round-trip
+      tested). Assisted authoring added: **insert-column** and **insert-function**
+      dropdowns splice at the caret (`formula-insert.ts`, pure + tested) and the
+      field shows **live syntax validation** from `parseExprText`.
+- [x] `irToDraft` is lossless for everything the UI can express and reports the
+      rest through a `warnings` collector (surfaced on open) instead of silently
+      dropping — asserted by round-trip tests.
 
-- [ ] **Step pipeline UI**: Data → Join → Custom column → Filter → Summarize →
-      Sort → Limit as visible, reorderable blocks (replacing the single stacked
-      form).
-- [ ] **Per-step preview**: first 10 rows up to that step — cheap on LOCAL
-      (compile the IR truncated at the step, run on DuckDB).
-- [ ] **Column picker on the data step** (raw-mode `fields` selection — needs a
-      small IR addition: `fields?: FieldRef[]` for unaggregated queries).
-- [ ] **SchemaTree upgrade**: search, click-to-add / drag-into-step, field
-      profile popover (distinct count, min/max, null% — one cheap DuckDB query),
-      multi-table view.
-- [ ] **Auto chart suggestion** from result shape (1 dim temporal → line; 1 dim
-      categorical → bar; 2 dims → stacked/grouped; no dims → KPI).
+### Stage 2 — Notebook UX (Metabase editor parity) — mostly done
+
+- [~] **Step pipeline UI**: `AdvancedQueryBuilder` is a NOTEBOOK of colored
+      `NotebookBlock` steps (Data → Joins → Custom columns → Filter → Summarize →
+      Metric filters → Windows → Sort → Limit) replacing the stacked form.
+      *(Blocks follow the pipeline's fixed logical order; free drag-REORDER is
+      deferred — reordering summarize/filter changes query meaning, and the
+      multi-stage feature already covers "summarize then filter again".)*
+- [x] **Per-step preview**: `draftUpToStep(draft, step)` truncates the draft and
+      the parent's `onPreview` runs it LOCAL for a 10-row peek under each step.
+- [x] **Column picker on the data step**: raw-mode `rawColumns` (IR `fields?:
+      FieldRef[]`) — `RawColumnPicker` selects which columns a non-aggregated
+      listing keeps (empty ⇒ all).
+- [~] **SchemaTree upgrade**: search ✅, click-to-add (smart metric/group-by
+      target) ✅, field-profile popover (rows · nulls + null% · distinct ·
+      min/max via one cached DuckDB query) ✅. *(Drag-into-step + multi-table /
+      joined-column view deferred — need a browser pass; click-to-add covers the
+      add-column path. NOTE: joined-table columns aren't yet selectable in
+      summarize/filter — a separate joins-scope follow-up.)*
+- [x] **Auto chart suggestion** (`suggest-viz.ts`, wired in `useQueryWorkspace`
+      while the user hasn't picked a type): no dims → kpi; raw → table; 1 temporal
+      dim → line; 1 categorical → bar; 2 dims → line if time-led else grouped bar.
+      Golden-tested (+8).
 
 ### Stage 3 — New IR capabilities
 
@@ -160,16 +193,25 @@ but unreachable from the UI, and `irToDraft` silently drops them.
 - [x] Dropped series disclosed in `VizChart` when the series count exceeds the
       palette cap.
 
-### Stage 5 — Drill-through (Metabase's killer feature, cheap for us on LOCAL)
+### Stage 5 — Drill-through (Metabase's killer feature, cheap for us on LOCAL) ✅
 
-- [ ] Column-header menu in results: filter by column, sort, **distribution**
-      (instant histogram), sum/avg, distinct values.
-- [ ] Cell click: filter by this value; **view underlying records** for an
-      aggregated cell; break out by category/time.
-- [ ] Chart point click: filter, view records, **temporal zoom** ("see this
-      month by week"), drag range-select on continuous axes to filter.
-- [ ] All implemented as IR rewrites executed LOCAL — instant, no server
-      round-trip; this is where client-side compute visibly beats Metabase.
+All drill actions are pure `draft → draft` LOCAL rewrites in `lib/query/drill.ts`
+(20 tests), wired through `ResultsRegion`.
+
+- [x] Column-header menu (`headerMenu`): **Distribution** (group-by + count),
+      **Sum**, **Average**, **Distinct count**; column sort via the header.
+- [x] Cell click menu (`cellMenu`): **Filter = value** (temporal cells pin a
+      half-open bucket range), **Zoom in** (finer bucket), **View underlying
+      records** (drops the summarize layer, keeps filters → raw listing).
+- [x] Chart interactions: **click** a mark → temporal zoom or filter
+      (`onCategoryClick`); **drag range-select** across the x-axis →
+      `drillFilterRange` filters to that span (temporal buckets → `[min start,
+      max next-start)`; raw numeric → `BETWEEN`). Recharts `ReferenceArea`
+      band + merged mouse handlers, gated so read-only dashboards stay inert;
+      the post-drag click is swallowed so a range doesn't also single-filter.
+      *(Chart drag interaction needs a browser pass; the range primitive +
+      draft rewrite are unit-tested.)*
+- [x] Every action is a LOCAL IR rewrite — instant, no server round-trip.
 
 ### Stage 6 — SQL editor pro ✅ (done)
 
@@ -475,8 +517,15 @@ re-query; one dataset crossing into the worker.
       403 for non-admins); `AuditLogView` + `/audit` route (LogsView-style dense
       rows, action-filter rail, "Load more"); admin-gated nav entry in `IconRail`
       + `CommandMenu`.
-- [ ] Onboarding checklist (connect source → first query → first dashboard →
-      first share).
+- [x] Onboarding checklist (connect source → first query → first dashboard →
+      first share). Dismissible "Getting started" card on `HomeView`. Step
+      completion is a monotonic latch (`lib/onboarding.ts`, unit-tested): live
+      signals — client sources (`!builtin`) + run history, plus durable server
+      facts from `GET /api/onboarding` (org-scoped `LIMIT 1` existence probes for
+      saved-query / query-widget / share-link) — are OR-merged onto the state
+      persisted in localStorage (keyed per org), so completed steps stay checked
+      across reloads and deletes. Each incomplete step routes to its surface;
+      progress bar + per-org dismiss.
 
 ---
 

@@ -181,6 +181,61 @@ export function drillFilterEq(
   return { ...draft, filters: [...draft.filters, ...leaves], offset: 0 };
 }
 
+/** A numeric BETWEEN leaf, min/max-ordered; null if either bound isn't a number. */
+function numericBetween(column: string, a: unknown, b: unknown): DraftIrFilter[] | null {
+  const na = Number(a);
+  const nb = Number(b);
+  if (!Number.isFinite(na) || !Number.isFinite(nb)) return null;
+  const low = Math.min(na, nb);
+  const high = Math.max(na, nb);
+  return [{ ...newDraftFilter(column, "between"), low: String(low), high: String(high) }];
+}
+
+/**
+ * Range-select on a continuous axis (chart drag): filter `column` to the span
+ * between two boundary values `a` and `b` (order-independent). A temporal
+ * dimension filters `[min bucket start, max bucket next-start)`; a raw numeric
+ * column filters `BETWEEN`. Returns null for anything without a meaningful
+ * continuous range (categorical breakouts, calc/window columns, non-numeric raw).
+ * Like every drill, a pure draft→draft LOCAL rewrite — it only appends filters.
+ */
+export function drillFilterRange(
+  draft: IrDraft,
+  fields: Field[],
+  columnName: string,
+  a: unknown,
+  b: unknown,
+): IrDraft | null {
+  const resolved = resolveResultColumn(draft, fields, columnName);
+  let leaves: DraftIrFilter[] | null = null;
+
+  if (resolved.kind === "dimension") {
+    const dim = draft.dimensions[resolved.index];
+    if (!fields.some((f) => f.name === dim.column)) return null; // calc/window dims
+    if (dim.temporal) {
+      const ra = bucketRange(a, dim.temporal);
+      const rb = bucketRange(b, dim.temporal);
+      if (!ra || !rb) return null;
+      const low = ra.low <= rb.low ? ra.low : rb.low;
+      const high = ra.high >= rb.high ? ra.high : rb.high;
+      leaves = [
+        { ...newDraftFilter(dim.column, "gte"), value: low },
+        { ...newDraftFilter(dim.column, "lt"), value: high },
+      ];
+    } else {
+      // A categorical breakout has no continuous range; only numeric qualifies.
+      if (fields.find((f) => f.name === dim.column)?.dataType !== "number") return null;
+      leaves = numericBetween(dim.column, a, b);
+    }
+  } else if (resolved.kind === "raw") {
+    if (resolved.field.dataType !== "number") return null;
+    leaves = numericBetween(resolved.field.name, a, b);
+  }
+
+  if (!leaves) return null;
+  return { ...draft, filters: [...draft.filters, ...leaves], offset: 0 };
+}
+
 /** Temporal zoom: pin the clicked bucket AND re-bucket one step finer. */
 export function drillZoomIn(
   draft: IrDraft,

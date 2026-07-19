@@ -21,6 +21,7 @@
 
 import * as React from "react";
 import { Loader2 } from "lucide-react";
+import { useSession } from "next-auth/react";
 import { useAnalyticsEngine, type AnalyticsEngine } from "@/hooks/useAnalyticsEngine";
 import { useDataSources, type DataSourcesApi } from "@/hooks/useDataSources";
 import { useQueryWorkspace, type QueryWorkspace } from "@/hooks/useQueryWorkspace";
@@ -57,8 +58,35 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
 }
 
 function Mounted({ children }: { children: React.ReactNode }) {
+  // The engine (+ its workers) is hoisted HERE so it boots once and survives
+  // route navigation AND org switches — rebooting DuckDB-WASM on every workspace
+  // change would be needlessly heavy.
   const engine = useAnalyticsEngine();
-  const sources = useDataSources(engine);
+  const { data } = useSession();
+  const orgId = data?.user?.orgId ?? null;
+
+  // ...but the org-scoped layer (sources + query session) is keyed by org, so
+  // switching workspaces cleanly remounts it — the source list re-fetches, file
+  // sources re-hydrate for the new org, and no state leaks across tenants. Org
+  // switch is a `router.refresh()` (no full remount), so without this key the
+  // stale previous-org sources would linger.
+  return (
+    <OrgScopedWorkspace key={orgId ?? "none"} engine={engine} orgId={orgId}>
+      {children}
+    </OrgScopedWorkspace>
+  );
+}
+
+function OrgScopedWorkspace({
+  engine,
+  orgId,
+  children,
+}: {
+  engine: AnalyticsEngine;
+  orgId: string | null;
+  children: React.ReactNode;
+}) {
+  const sources = useDataSources(engine, orgId);
   const workspace = useQueryWorkspace(engine, sources);
 
   const engineStatus: EngineStatus = engine.error

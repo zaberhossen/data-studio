@@ -41,6 +41,7 @@ import { makeNumberFormatter } from "@/lib/viz/format";
 import {
   drillDistribution,
   drillFilterEq,
+  drillFilterRange,
   drillSummarize,
   drillViewRecords,
   drillZoomIn,
@@ -340,6 +341,18 @@ export function ResultsRegion({
       }
     : undefined;
 
+  // Drag-select a span on the x-axis → filter to that range (temporal/numeric).
+  const onRangeSelect = drill
+    ? (a: string, b: string) => {
+        if (a === b) return;
+        const { draft, fields, apply } = drill;
+        const xName = viz?.xKey ?? table?.columns[0]?.name;
+        if (!xName) return;
+        const next = drillFilterRange(draft, fields, xName, a, b);
+        if (next) apply(next);
+      }
+    : undefined;
+
   const handleSort = (next: SortSpec | null) => {
     setSort(next);
     setPage(0);
@@ -450,6 +463,7 @@ export function ResultsRegion({
               table={chartTable}
               viz={viz ?? { type: "bar" }}
               onCategoryClick={onCategoryClick}
+              onRangeSelect={onRangeSelect}
             />
           </div>
           {onVizChange && customizeOpen && (
@@ -476,10 +490,12 @@ function ChartArea({
   table,
   viz,
   onCategoryClick,
+  onRangeSelect,
 }: {
   table: ResultTable | null;
   viz: WidgetViz;
   onCategoryClick?: (value: string) => void;
+  onRangeSelect?: (a: string, b: string) => void;
 }) {
   if (viz.type === "table") {
     return (
@@ -497,7 +513,9 @@ function ChartArea({
   }
   if (viz.type === "pivot") return <PivotTable table={table} viz={viz} />;
   if (viz.type === "kpi") return <KpiPreview table={table} viz={viz} />;
-  return <VizChart table={table} viz={viz} onCategoryClick={onCategoryClick} />;
+  return (
+    <VizChart table={table} viz={viz} onCategoryClick={onCategoryClick} onRangeSelect={onRangeSelect} />
+  );
 }
 
 /** Minimal KPI preview (the dashboard widget adds goal/trend chrome). */

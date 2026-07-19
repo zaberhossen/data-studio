@@ -7,19 +7,26 @@
  * rows persist verbatim and rehydrate on boot; without this store the handles
  * lived only in a `useRef` and every refresh silently dropped them.
  *
+ * Records are **org-scoped** (`orgId`): file sources are per-workspace like every
+ * other source, so `list(orgId)` returns only the active org's uploads and a
+ * file added under one org never bleeds into another on the same browser.
+ *
  * Mirrors the pluggable-store shape of `@/lib/fields/overrides-store` (the
  * IndexedDB impl can be swapped without touching `useDataSources`).
  */
 
 export interface LocalFileSourceRecord {
   id: string;
+  /** Owning org — file sources are per-workspace, like server sources. */
+  orgId: string;
   name: string;
   file: File;
   addedAt: number;
 }
 
 export interface LocalSourcesStore {
-  list(): Promise<LocalFileSourceRecord[]>;
+  /** File sources for one org, oldest first. */
+  list(orgId: string): Promise<LocalFileSourceRecord[]>;
   put(record: LocalFileSourceRecord): Promise<void>;
   remove(id: string): Promise<void>;
 }
@@ -61,9 +68,9 @@ class IdbLocalSourcesStore implements LocalSourcesStore {
     });
   }
 
-  async list(): Promise<LocalFileSourceRecord[]> {
+  async list(orgId: string): Promise<LocalFileSourceRecord[]> {
     const rows = await this.tx<LocalFileSourceRecord[]>("readonly", (s) => s.getAll());
-    return rows.sort((a, b) => a.addedAt - b.addedAt);
+    return rows.filter((r) => r.orgId === orgId).sort((a, b) => a.addedAt - b.addedAt);
   }
 
   async put(record: LocalFileSourceRecord): Promise<void> {
@@ -96,24 +103,30 @@ export function getLocalSourcesStore(): LocalSourcesStore {
 }
 
 /**
- * Last-active source id — restored on boot so a refresh lands the user back on
- * the source they were querying (falls back to the demo when unknown).
+ * Last-active source id, **per org** — restored on boot so a refresh (or org
+ * switch) lands the user back on the source they were querying in THAT org
+ * (falls back to the demo when unknown). Keying by org means switching
+ * workspaces never carries a foreign source id.
  */
-const ACTIVE_KEY = "data-studio:active-source";
+const ACTIVE_KEY_PREFIX = "data-studio:active-source";
 
-export function readActiveSourceId(): string | null {
+function activeKey(orgId: string): string {
+  return `${ACTIVE_KEY_PREFIX}:${orgId}`;
+}
+
+export function readActiveSourceId(orgId: string): string | null {
   try {
-    return typeof window !== "undefined" ? window.localStorage.getItem(ACTIVE_KEY) : null;
+    return typeof window !== "undefined" ? window.localStorage.getItem(activeKey(orgId)) : null;
   } catch {
     return null;
   }
 }
 
-export function writeActiveSourceId(id: string | null): void {
+export function writeActiveSourceId(orgId: string, id: string | null): void {
   try {
     if (typeof window === "undefined") return;
-    if (id) window.localStorage.setItem(ACTIVE_KEY, id);
-    else window.localStorage.removeItem(ACTIVE_KEY);
+    if (id) window.localStorage.setItem(activeKey(orgId), id);
+    else window.localStorage.removeItem(activeKey(orgId));
   } catch {
     // Quota / private mode — continuity is best-effort.
   }
