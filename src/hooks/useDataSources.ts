@@ -113,7 +113,14 @@ export interface DataSourcesApi {
   getFields: (id: string) => Promise<Field[]>;
 }
 
-export function useDataSources(engine: AnalyticsEngine): DataSourcesApi {
+export function useDataSources(
+  engine: AnalyticsEngine,
+  orgId: string | null,
+): DataSourcesApi {
+  // Persistence key for org-scoped client state (file sources + active id).
+  // File sources live only in the browser, so they carry no server orgId — we
+  // scope them by the active org here so they behave like every other source.
+  const orgKey = orgId ?? "none";
   const [serverSources, setServerSources] = React.useState<DataSourceMeta[]>([]);
   const [localSources, setLocalSources] = React.useState<SourceView[]>([]);
   const [live, setLive] = React.useState<Record<string, LiveState>>({});
@@ -162,7 +169,7 @@ export function useDataSources(engine: AnalyticsEngine): DataSourcesApi {
   React.useEffect(() => {
     let cancelled = false;
     void localStore
-      .list()
+      .list(orgKey)
       .then((records) => {
         if (cancelled || records.length === 0) return;
         for (const r of records) fileHandles.current.set(r.id, r.file);
@@ -182,12 +189,12 @@ export function useDataSources(engine: AnalyticsEngine): DataSourcesApi {
     return () => {
       cancelled = true;
     };
-  }, [localStore]);
+  }, [localStore, orgKey]);
 
   const activate = React.useCallback(
     async (id: string) => {
       setActiveId(id);
-      writeActiveSourceId(id);
+      writeActiveSourceId(orgKey, id);
       patchLive(id, { status: "connecting", error: undefined });
       try {
         if (id === DEMO_SOURCE_ID) {
@@ -221,7 +228,7 @@ export function useDataSources(engine: AnalyticsEngine): DataSourcesApi {
         });
       }
     },
-    [engine, patchLive, serverSources],
+    [engine, patchLive, serverSources, orgKey],
   );
 
   const refreshActive = React.useCallback(async () => {
@@ -236,14 +243,14 @@ export function useDataSources(engine: AnalyticsEngine): DataSourcesApi {
     if (restoredRef.current || activeId !== null) return;
     if (!engine.ready || !hydrated || !listLoaded) return;
     restoredRef.current = true;
-    const saved = readActiveSourceId();
+    const saved = readActiveSourceId(orgKey);
     const known =
       saved !== null &&
       (saved === DEMO_SOURCE_ID ||
         fileHandles.current.has(saved) ||
         serverSources.some((s) => s.id === saved));
     void activate(known ? (saved as string) : DEMO_SOURCE_ID);
-  }, [engine.ready, hydrated, listLoaded, activeId, serverSources, activate]);
+  }, [engine.ready, hydrated, listLoaded, activeId, serverSources, activate, orgKey]);
 
   // Load the active source's overrides once (cached thereafter); layered onto
   // `activeFields` below so QueryBuilder/SqlEditor see them automatically.
@@ -317,11 +324,14 @@ export function useDataSources(engine: AnalyticsEngine): DataSourcesApi {
         { id, name: file.name, kind: "file", status: "idle", local: true },
       ]);
       // Write-through so the source survives a refresh (best-effort — an
-      // IndexedDB failure must not block the in-session upload).
-      void localStore.put({ id, name: file.name, file, addedAt: Date.now() }).catch(() => {});
+      // IndexedDB failure must not block the in-session upload). Org-scoped so
+      // it only reappears in the workspace it was uploaded to.
+      void localStore
+        .put({ id, orgId: orgKey, name: file.name, file, addedAt: Date.now() })
+        .catch(() => {});
       await activate(id);
     },
-    [activate, localStore],
+    [activate, localStore, orgKey],
   );
 
   const removeSource = React.useCallback(
@@ -361,10 +371,10 @@ export function useDataSources(engine: AnalyticsEngine): DataSourcesApi {
       void overridesStore.clear(id);
       if (activeId === id) {
         setActiveId(null);
-        writeActiveSourceId(null);
+        writeActiveSourceId(orgKey, null);
       }
     },
-    [activeId, localStore, overridesStore],
+    [activeId, localStore, overridesStore, orgKey],
   );
 
   const testSource = React.useCallback(

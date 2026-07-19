@@ -22,16 +22,23 @@ keeps the `File` handle in a `useRef` Map and the metadata in `localSources`
 state — nothing is written anywhere durable, so a refresh wipes them.
 
 Fix (no server changes needed):
-- [ ] New client store `src/lib/sources/local-store.ts` following the existing
+- [x] New client store `src/lib/sources/local-store.ts` following the existing
       swappable-store seam pattern, backed by **IndexedDB** (structured clone
-      persists `File`/`Blob` natively — store `{id, name, file}` rows).
-- [ ] `useDataSources`: hydrate `localSources` + `fileHandles` from IndexedDB on
+      persists `File`/`Blob` natively — store `{id, orgId, name, file}` rows;
+      SSR/private-mode Noop fallback).
+- [x] `useDataSources`: hydrate `localSources` + `fileHandles` from IndexedDB on
       mount; write-through in `addFileSource`; delete in `removeSource`.
       `activate` already lazily calls `engine.loadFile(file)`, so worker
       re-registration works unchanged after reload.
-- [ ] Persist `activeId` (localStorage) and re-activate on boot.
-- [ ] UX: make the active workspace/org obvious — sources are org-scoped, so an
-      org switch "losing" sources must not read as a persistence bug.
+- [x] Persist `activeId` (localStorage) and re-activate on boot.
+- [x] UX: sources no longer bleed across orgs. File sources are now **org-scoped**
+      — records carry `orgId`, `list(orgId)` filters, and the last-active source
+      id is keyed per org (unit-tested: no cross-org bleed). `useDataSources`
+      takes the active `orgId`; `WorkspaceProvider` keeps the engine hoisted
+      (boots once) but **keys the org-scoped layer (sources + query session) by
+      org**, so an org switch (`router.refresh()`, no full remount) cleanly
+      re-fetches the server list + re-hydrates file sources for the new org
+      instead of showing the previous org's stale sources.
 
 ### B. Quick wins / stub cleanup
 
