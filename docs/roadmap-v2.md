@@ -92,7 +92,7 @@ OR/NOT filter groups, expression functions (case/concat/date_trunc/…),
 multi-condition joins, multi-key sort, aliases — all compile and are tested,
 but unreachable from the UI, and `irToDraft` silently drops them.
 
-### Stage 1 — Close the IR↔UI gap (pure UI work, IR untouched) ✅
+### Stage 1 — Close the IR↔UI gap (pure UI work, IR untouched) — mostly done
 
 The draft model (`ir-draft.ts`) + notebook builder (`AdvancedQueryBuilder.tsx`)
 now express the full IR; 106 draft/compile/expr tests cover it.
@@ -107,9 +107,14 @@ now express the full IR; 106 draft/compile/expr tests cover it.
       (dimension/metric/window alias via `sortableNamesForDraft`), asc/desc.
 - [x] Dimension/metric **aliases**: `DraftDimension.alias` + `DraftMetric.alias`,
       surfaced in every pill + editor.
-- [x] **Joins**: `DraftJoin` with a table picker, an optional alias, and
-      **multi-condition** `DraftJoinCondition[]` (add/remove rows), replacing the
-      old free-text single-condition input.
+- [~] **Joins**: `DraftJoin` supports an optional alias and **multi-condition**
+      `DraftJoinCondition[]` (add/remove rows), and the base-column side is a
+      schema-backed picker. *(Correction: the join TABLE and the JOINED-column
+      side are still free-text inputs, not schema pickers — schema-backed pickers
+      need per-table column introspection, which the connectors don't yet expose.
+      Consequently joined-table columns aren't selectable in summarize/filter/sort
+      either. Tracked as the "schema-backed joins" follow-up; needs a connector
+      `columnsByTable` capability + a browser/DB verification pass.)*
 - [x] **Window functions**: multi-column partition + multi-key order
       (`DraftWindow` + `newDraftWindowOrder`), value/arg/frame controls.
 - [x] **Expression editor**: calculated fields are a formula bar over the full
@@ -451,7 +456,13 @@ re-query; one dataset crossing into the worker.
       use never trips (240/min default; 600/min for the autosave PUT + query
       `/run` hot paths); returns 429. Tested. *(Per-process, like the public
       limiter — a shared store for a global quota stays out of scope.)*
-- [ ] `share_links.permission = "edit"` is dead schema — implement or drop.
+- [x] `share_links.permission = "edit"` was dead schema — **dropped** from the app
+      surface. Public sharing is view-only (frozen snapshots), so `permission`
+      was always "view" and never read; removed the `SharePermission` type +
+      the field from `ShareLinkMeta`/`CreateShareInput`/`PublicShare` and the
+      store. The DB column stays (defaults "view", marked DEPRECATED in
+      `schema.ts`) to avoid a Postgres enum-value migration — drop in a later
+      cleanup.
 - [ ] Dashboard filter SQL merge → bound params (see M13-C).
 - [~] CSP headers; dependency audit in CI; `DATA_STUDIO_ENC_KEY` rotation
       runbook.

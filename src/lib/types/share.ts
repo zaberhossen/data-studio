@@ -21,7 +21,6 @@ import type {
 import type { QueryKind, WidgetViz } from "@/lib/types/query";
 import type { ResultTable } from "@/lib/types/results";
 
-export type SharePermission = "view" | "edit";
 export type ShareMode = "link" | "embed";
 
 /** A widget stripped of everything identifying — only what's needed to render. */
@@ -66,7 +65,6 @@ export interface DashboardSnapshot {
 export interface ShareLinkMeta {
   id: string;
   token: string;
-  permission: SharePermission;
   mode: ShareMode;
   expiresAt?: string | null;
   revokedAt?: string | null;

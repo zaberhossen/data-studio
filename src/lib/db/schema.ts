@@ -343,6 +343,11 @@ export const shareLinks = pgTable(
       .references(() => dashboards.id, { onDelete: "cascade" }),
     /** Opaque, unguessable, revocable independently of the dashboard id. */
     token: text("token").notNull().unique(),
+    /**
+     * DEPRECATED — public sharing is view-only (frozen snapshots), so this is
+     * always "view" and is no longer read by the app. Kept as a column (defaults
+     * "view") to avoid a Postgres enum-value migration; drop in a later cleanup.
+     */
     permission: sharePermissionEnum("permission").notNull().default("view"),
     mode: shareModeEnum("mode").notNull().default("link"),
     /**

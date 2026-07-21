@@ -15,12 +15,7 @@ import { and, desc, eq } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import { dashboards, shareLinks } from "@/lib/db/schema";
 import { assertCanWrite, requireOrg, type AuthContext } from "@/lib/db/scope";
-import type {
-  DashboardSnapshot,
-  ShareLinkMeta,
-  SharePermission,
-  ShareMode,
-} from "@/lib/types/share";
+import type { DashboardSnapshot, ShareLinkMeta, ShareMode } from "@/lib/types/share";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const isUuid = (id: string) => UUID_RE.test(id);
@@ -34,7 +29,6 @@ function rowToMeta(r: typeof shareLinks.$inferSelect): ShareLinkMeta {
   return {
     id: r.id,
     token: r.token,
-    permission: r.permission as SharePermission,
     mode: r.mode as ShareMode,
     expiresAt: r.expiresAt ? r.expiresAt.toISOString() : null,
     revokedAt: r.revokedAt ? r.revokedAt.toISOString() : null,
@@ -43,7 +37,6 @@ function rowToMeta(r: typeof shareLinks.$inferSelect): ShareLinkMeta {
 }
 
 export interface CreateShareInput {
-  permission?: SharePermission;
   mode?: ShareMode;
   /** ISO string or null (never expires). */
   expiresAt?: string | null;
@@ -53,7 +46,6 @@ export interface CreateShareInput {
 /** What a valid public token resolves to (nothing identifying beyond the shell). */
 export interface PublicShare {
   snapshot: DashboardSnapshot;
-  permission: SharePermission;
   mode: ShareMode;
   /** Owning org + link id — used only server-side for audit logging. */
   orgId: string;
@@ -80,7 +72,6 @@ export class DbShareLinkStore {
         orgId: ctx.orgId,
         dashboardId,
         token: newToken(),
-        permission: input.permission ?? "view",
         mode: input.mode ?? "link",
         snapshot: input.snapshot,
         expiresAt: input.expiresAt ? new Date(input.expiresAt) : null,
@@ -130,7 +121,6 @@ export class DbShareLinkStore {
     if (!row.snapshot) return null;
     return {
       snapshot: row.snapshot,
-      permission: row.permission as SharePermission,
       mode: row.mode as ShareMode,
       orgId: row.orgId,
       linkId: row.id,
